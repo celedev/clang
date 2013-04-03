@@ -654,7 +654,7 @@ CXString clang_getDeclObjCTypeEncoding(CXCursor C) {
     QualType Ty;
     if (const TypeDecl *TD = dyn_cast<TypeDecl>(D))
       Ty = Ctx.getTypeDeclType(TD);
-    if (const ValueDecl *VD = dyn_cast<ValueDecl>(D))
+    else if (const ValueDecl *VD = dyn_cast<ValueDecl>(D))
       Ty = VD->getType();
     else return cxstring::createCXString("?");
     Ctx.getObjCEncodingForType(Ty, encoding);

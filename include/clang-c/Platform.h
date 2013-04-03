@@ -26,7 +26,9 @@ extern "C" {
     #define CINDEX_LINKAGE __declspec(dllimport)
   #endif
 #else
-  #define CINDEX_LINKAGE
+  #ifndef CINDEX_LINKAGE
+    #define CINDEX_LINKAGE
+  #endif
 #endif
 
 #ifdef __GNUC__
