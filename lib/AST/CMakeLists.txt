@@ -22,6 +22,7 @@ add_clang_library(clangAST
   DeclFriend.cpp
   DeclGroup.cpp
   DeclObjC.cpp
+  DeclOpenMP.cpp
   DeclPrinter.cpp
   DeclTemplate.cpp
   DumpXML.cpp
@@ -65,9 +66,11 @@ add_dependencies(clangAST
   ClangAttrImpl
   ClangAttrDump
   ClangCommentCommandInfo
+  ClangCommentCommandList
   ClangCommentNodes
   ClangCommentHTMLTags
   ClangCommentHTMLTagsProperties
+  ClangCommentHTMLNamedCharacterReferences
   ClangDeclNodes
   ClangDiagnosticAST
   ClangDiagnosticComment

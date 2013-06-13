@@ -22,6 +22,7 @@
 #include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/Tooling/CompilationDatabase.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/raw_ostream.h"
@@ -235,8 +236,9 @@ void ToolInvocation::addFileMappingsTo(SourceManager &Sources) {
 
 ClangTool::ClangTool(const CompilationDatabase &Compilations,
                      ArrayRef<std::string> SourcePaths)
-    : Files((FileSystemOptions())),
-      ArgsAdjuster(new ClangSyntaxOnlyAdjuster()) {
+    : Files((FileSystemOptions())) {
+  ArgsAdjusters.push_back(new ClangStripOutputAdjuster());
+  ArgsAdjusters.push_back(new ClangSyntaxOnlyAdjuster());
   for (unsigned I = 0, E = SourcePaths.size(); I != E; ++I) {
     SmallString<1024> File(getAbsolutePath(SourcePaths[I]));
 
@@ -263,7 +265,18 @@ void ClangTool::mapVirtualFile(StringRef FilePath, StringRef Content) {
 }
 
 void ClangTool::setArgumentsAdjuster(ArgumentsAdjuster *Adjuster) {
-  ArgsAdjuster.reset(Adjuster);
+  clearArgumentsAdjusters();
+  appendArgumentsAdjuster(Adjuster);
+}
+
+void ClangTool::appendArgumentsAdjuster(ArgumentsAdjuster *Adjuster) {
+  ArgsAdjusters.push_back(Adjuster);
+}
+
+void ClangTool::clearArgumentsAdjusters() {
+  for (unsigned I = 0, E = ArgsAdjusters.size(); I != E; ++I)
+    delete ArgsAdjusters[I];
+  ArgsAdjusters.clear();
 }
 
 int ClangTool::run(FrontendActionFactory *ActionFactory) {
@@ -291,18 +304,24 @@ int ClangTool::run(FrontendActionFactory *ActionFactory) {
     if (chdir(CompileCommands[I].second.Directory.c_str()))
       llvm::report_fatal_error("Cannot chdir into \"" +
                                CompileCommands[I].second.Directory + "\n!");
-    std::vector<std::string> CommandLine =
-      ArgsAdjuster->Adjust(CompileCommands[I].second.CommandLine);
+    std::vector<std::string> CommandLine = CompileCommands[I].second.CommandLine;
+    for (unsigned I = 0, E = ArgsAdjusters.size(); I != E; ++I)
+      CommandLine = ArgsAdjusters[I]->Adjust(CommandLine);
     assert(!CommandLine.empty());
     CommandLine[0] = MainExecutable;
-    llvm::outs() << "Processing: " << File << ".\n";
+    // FIXME: We need a callback mechanism for the tool writer to output a
+    // customized message for each file.
+    DEBUG({
+      llvm::dbgs() << "Processing: " << File << ".\n";
+    });
     ToolInvocation Invocation(CommandLine, ActionFactory->create(), &Files);
     for (int I = 0, E = MappedFileContents.size(); I != E; ++I) {
       Invocation.mapVirtualFile(MappedFileContents[I].first,
                                 MappedFileContents[I].second);
     }
     if (!Invocation.run()) {
-      llvm::outs() << "Error while processing " << File << ".\n";
+      // FIXME: Diagnostics should be used instead.
+      llvm::errs() << "Error while processing " << File << ".\n";
       ProcessingFailed = true;
     }
   }

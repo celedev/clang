@@ -44,6 +44,7 @@
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/PathV1.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/SourceMgr.h"
@@ -245,7 +246,7 @@ static formatted_raw_ostream *GetOutputStream(AssemblerInvocation &Opts,
   // Make sure that the Out file gets unlinked from the disk if we get a
   // SIGINT.
   if (Opts.OutputPath != "-")
-    sys::RemoveFileOnSignal(sys::Path(Opts.OutputPath));
+    sys::RemoveFileOnSignal(Opts.OutputPath);
 
   std::string Error;
   raw_fd_ostream *Out =
@@ -287,11 +288,11 @@ static bool ExecuteAssembler(AssemblerInvocation &Opts,
   // it later.
   SrcMgr.setIncludeDirs(Opts.IncludePaths);
 
-  OwningPtr<MCAsmInfo> MAI(TheTarget->createMCAsmInfo(Opts.Triple));
-  assert(MAI && "Unable to create target asm info!");
-
   OwningPtr<MCRegisterInfo> MRI(TheTarget->createMCRegInfo(Opts.Triple));
   assert(MRI && "Unable to create target register info!");
+
+  OwningPtr<MCAsmInfo> MAI(TheTarget->createMCAsmInfo(*MRI, Opts.Triple));
+  assert(MAI && "Unable to create target asm info!");
 
   bool IsBinary = Opts.OutputType == AssemblerInvocation::FT_Obj;
   formatted_raw_ostream *Out = GetOutputStream(Opts, Diags, IsBinary);
@@ -384,7 +385,8 @@ static bool ExecuteAssembler(AssemblerInvocation &Opts,
   return Success;
 }
 
-static void LLVMErrorHandler(void *UserData, const std::string &Message) {
+static void LLVMErrorHandler(void *UserData, const std::string &Message,
+                             bool GenCrashDiag) {
   DiagnosticsEngine &Diags = *static_cast<DiagnosticsEngine*>(UserData);
 
   Diags.Report(diag::err_fe_error_backend) << Message;

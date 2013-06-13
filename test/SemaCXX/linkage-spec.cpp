@@ -90,6 +90,10 @@ extern "C++" using N::value;
 // PR7076
 extern "C" const char *Version_string = "2.9";
 
+extern "C" {
+  extern const char *Version_string2 = "2.9";
+}
+
 namespace PR9162 {
   extern "C" {
     typedef struct _ArtsSink ArtsSink;
@@ -102,3 +106,14 @@ namespace PR9162 {
     return sizeof(ArtsSink);
   }
 }
+
+namespace pr14958 {
+  namespace js { extern int ObjectClass; }
+  extern "C" {
+    namespace js {}
+  }
+  int js::ObjectClass;
+}
+
+extern "C" void PR16167; // expected-error {{variable has incomplete type 'void'}}
+extern void PR16167_0; // expected-error {{variable has incomplete type 'void'}}

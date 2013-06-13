@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/Basic/CharInfo.h"
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Driver/ArgList.h"
 #include "clang/Driver/Compilation.h"
@@ -42,7 +43,6 @@
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/system_error.h"
-#include <cctype>
 using namespace clang;
 using namespace clang::driver;
 
@@ -202,7 +202,7 @@ static void ExpandArgsFromBuf(const char *Arg,
   std::string CurArg;
 
   for (const char *P = Buf; ; ++P) {
-    if (*P == '\0' || (isspace(*P) && InQuote == ' ')) {
+    if (*P == '\0' || (isWhitespace(*P) && InQuote == ' ')) {
       if (!CurArg.empty()) {
 
         if (CurArg[0] != '@') {
@@ -219,7 +219,7 @@ static void ExpandArgsFromBuf(const char *Arg,
         continue;
     }
 
-    if (isspace(*P)) {
+    if (isWhitespace(*P)) {
       if (InQuote != ' ')
         CurArg.push_back(*P);
       continue;
@@ -373,71 +373,6 @@ int main(int argc_, const char **argv_) {
     }
   }
 
-  llvm::sys::Path Path = GetExecutablePath(argv[0], CanonicalPrefixes);
-
-  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions;
-  {
-    // Note that ParseDiagnosticArgs() uses the cc1 option table.
-    OwningPtr<OptTable> CC1Opts(createDriverOptTable());
-    unsigned MissingArgIndex, MissingArgCount;
-    OwningPtr<InputArgList> Args(CC1Opts->ParseArgs(argv.begin()+1, argv.end(),
-                                            MissingArgIndex, MissingArgCount));
-    // We ignore MissingArgCount and the return value of ParseDiagnosticArgs.
-    // Any errors that would be diagnosed here will also be diagnosed later,
-    // when the DiagnosticsEngine actually exists.
-    (void) ParseDiagnosticArgs(*DiagOpts, *Args);
-  }
-  // Now we can create the DiagnosticsEngine with a properly-filled-out
-  // DiagnosticOptions instance.
-  TextDiagnosticPrinter *DiagClient
-    = new TextDiagnosticPrinter(llvm::errs(), &*DiagOpts);
-  DiagClient->setPrefix(llvm::sys::path::stem(Path.str()));
-  IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
-
-  DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagClient);
-  ProcessWarningOptions(Diags, *DiagOpts, /*ReportDiags=*/false);
-
-  Driver TheDriver(Path.str(), llvm::sys::getDefaultTargetTriple(),
-                   "a.out", Diags);
-
-  // Attempt to find the original path used to invoke the driver, to determine
-  // the installed path. We do this manually, because we want to support that
-  // path being a symlink.
-  {
-    SmallString<128> InstalledPath(argv[0]);
-
-    // Do a PATH lookup, if there are no directory components.
-    if (llvm::sys::path::filename(InstalledPath) == InstalledPath) {
-      llvm::sys::Path Tmp = llvm::sys::Program::FindProgramByName(
-        llvm::sys::path::filename(InstalledPath.str()));
-      if (!Tmp.empty())
-        InstalledPath = Tmp.str();
-    }
-    llvm::sys::fs::make_absolute(InstalledPath);
-    InstalledPath = llvm::sys::path::parent_path(InstalledPath);
-    bool exists;
-    if (!llvm::sys::fs::exists(InstalledPath.str(), exists) && exists)
-      TheDriver.setInstalledDir(InstalledPath);
-  }
-
-  llvm::InitializeAllTargets();
-  ParseProgName(argv, SavedStrings, TheDriver);
-
-  // Handle CC_PRINT_OPTIONS and CC_PRINT_OPTIONS_FILE.
-  TheDriver.CCPrintOptions = !!::getenv("CC_PRINT_OPTIONS");
-  if (TheDriver.CCPrintOptions)
-    TheDriver.CCPrintOptionsFilename = ::getenv("CC_PRINT_OPTIONS_FILE");
-
-  // Handle CC_PRINT_HEADERS and CC_PRINT_HEADERS_FILE.
-  TheDriver.CCPrintHeaders = !!::getenv("CC_PRINT_HEADERS");
-  if (TheDriver.CCPrintHeaders)
-    TheDriver.CCPrintHeadersFilename = ::getenv("CC_PRINT_HEADERS_FILE");
-
-  // Handle CC_LOG_DIAGNOSTICS and CC_LOG_DIAGNOSTICS_FILE.
-  TheDriver.CCLogDiagnostics = !!::getenv("CC_LOG_DIAGNOSTICS");
-  if (TheDriver.CCLogDiagnostics)
-    TheDriver.CCLogDiagnosticsFilename = ::getenv("CC_LOG_DIAGNOSTICS_FILE");
-
   // Handle QA_OVERRIDE_GCC3_OPTIONS and CCC_ADD_ARGS, used for editing a
   // command line behind the scenes.
   if (const char *OverrideStr = ::getenv("QA_OVERRIDE_GCC3_OPTIONS")) {
@@ -464,23 +399,99 @@ int main(int argc_, const char **argv_) {
     argv.insert(&argv[1], ExtraArgs.begin(), ExtraArgs.end());
   }
 
+  llvm::sys::Path Path = GetExecutablePath(argv[0], CanonicalPrefixes);
+
+  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions;
+  {
+    // Note that ParseDiagnosticArgs() uses the cc1 option table.
+    OwningPtr<OptTable> CC1Opts(createDriverOptTable());
+    unsigned MissingArgIndex, MissingArgCount;
+    OwningPtr<InputArgList> Args(CC1Opts->ParseArgs(argv.begin()+1, argv.end(),
+                                            MissingArgIndex, MissingArgCount));
+    // We ignore MissingArgCount and the return value of ParseDiagnosticArgs.
+    // Any errors that would be diagnosed here will also be diagnosed later,
+    // when the DiagnosticsEngine actually exists.
+    (void) ParseDiagnosticArgs(*DiagOpts, *Args);
+  }
+  // Now we can create the DiagnosticsEngine with a properly-filled-out
+  // DiagnosticOptions instance.
+  TextDiagnosticPrinter *DiagClient
+    = new TextDiagnosticPrinter(llvm::errs(), &*DiagOpts);
+  DiagClient->setPrefix(llvm::sys::path::filename(Path.str()));
+  IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
+
+  DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagClient);
+  ProcessWarningOptions(Diags, *DiagOpts, /*ReportDiags=*/false);
+
+  Driver TheDriver(Path.str(), llvm::sys::getDefaultTargetTriple(),
+                   "a.out", Diags);
+
+  // Attempt to find the original path used to invoke the driver, to determine
+  // the installed path. We do this manually, because we want to support that
+  // path being a symlink.
+  {
+    SmallString<128> InstalledPath(argv[0]);
+
+    // Do a PATH lookup, if there are no directory components.
+    if (llvm::sys::path::filename(InstalledPath) == InstalledPath) {
+      std::string Tmp = llvm::sys::FindProgramByName(
+        llvm::sys::path::filename(InstalledPath.str()));
+      if (!Tmp.empty())
+        InstalledPath = Tmp;
+    }
+    llvm::sys::fs::make_absolute(InstalledPath);
+    InstalledPath = llvm::sys::path::parent_path(InstalledPath);
+    bool exists;
+    if (!llvm::sys::fs::exists(InstalledPath.str(), exists) && exists)
+      TheDriver.setInstalledDir(InstalledPath);
+  }
+
+  llvm::InitializeAllTargets();
+  ParseProgName(argv, SavedStrings, TheDriver);
+
+  // Handle CC_PRINT_OPTIONS and CC_PRINT_OPTIONS_FILE.
+  TheDriver.CCPrintOptions = !!::getenv("CC_PRINT_OPTIONS");
+  if (TheDriver.CCPrintOptions)
+    TheDriver.CCPrintOptionsFilename = ::getenv("CC_PRINT_OPTIONS_FILE");
+
+  // Handle CC_PRINT_HEADERS and CC_PRINT_HEADERS_FILE.
+  TheDriver.CCPrintHeaders = !!::getenv("CC_PRINT_HEADERS");
+  if (TheDriver.CCPrintHeaders)
+    TheDriver.CCPrintHeadersFilename = ::getenv("CC_PRINT_HEADERS_FILE");
+
+  // Handle CC_LOG_DIAGNOSTICS and CC_LOG_DIAGNOSTICS_FILE.
+  TheDriver.CCLogDiagnostics = !!::getenv("CC_LOG_DIAGNOSTICS");
+  if (TheDriver.CCLogDiagnostics)
+    TheDriver.CCLogDiagnosticsFilename = ::getenv("CC_LOG_DIAGNOSTICS_FILE");
+
   OwningPtr<Compilation> C(TheDriver.BuildCompilation(argv));
   int Res = 0;
-  const Command *FailingCommand = 0;
+  SmallVector<std::pair<int, const Command *>, 4> FailingCommands;
   if (C.get())
-    Res = TheDriver.ExecuteCompilation(*C, FailingCommand);
+    Res = TheDriver.ExecuteCompilation(*C, FailingCommands);
 
   // Force a crash to test the diagnostics.
   if (::getenv("FORCE_CLANG_DIAGNOSTICS_CRASH")) {
     Diags.Report(diag::err_drv_force_crash) << "FORCE_CLANG_DIAGNOSTICS_CRASH";
-    Res = -1;
+    const Command *FailingCommand = 0;
+    FailingCommands.push_back(std::make_pair(-1, FailingCommand));
   }
 
-  // If result status is < 0, then the driver command signalled an error.
-  // If result status is 70, then the driver command reported a fatal error.
-  // In these cases, generate additional diagnostic information if possible.
-  if (Res < 0 || Res == 70)
-    TheDriver.generateCompilationDiagnostics(*C, FailingCommand);
+  for (SmallVectorImpl< std::pair<int, const Command *> >::iterator it =
+         FailingCommands.begin(), ie = FailingCommands.end(); it != ie; ++it) {
+    int CommandRes = it->first;
+    const Command *FailingCommand = it->second;
+    if (!Res)
+      Res = CommandRes;
+
+    // If result status is < 0, then the driver command signalled an error.
+    // If result status is 70, then the driver command reported a fatal error.
+    // In these cases, generate additional diagnostic information if possible.
+    if (CommandRes < 0 || CommandRes == 70) {
+      TheDriver.generateCompilationDiagnostics(*C, FailingCommand);
+      break;
+    }
+  }
 
   // If any timers were active but haven't been destroyed yet, print their
   // results now.  This happens in -disable-free mode.
@@ -496,5 +507,7 @@ int main(int argc_, const char **argv_) {
     Res = 1;
 #endif
 
+  // If we have multiple failing commands, we return the result of the first
+  // failing command.
   return Res;
 }

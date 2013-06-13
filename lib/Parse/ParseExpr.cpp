@@ -691,8 +691,14 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
     Res = getExprAnnotation(Tok);
     ConsumeToken();
     break;
-      
+
   case tok::kw_decltype:
+    // Annotate the token and tail recurse.
+    if (TryAnnotateTypeOrScopeToken())
+      return ExprError();
+    assert(Tok.isNot(tok::kw_decltype));
+    return ParseCastExpression(isUnaryExpression, isAddressOfOperand);
+      
   case tok::identifier: {      // primary-expression: identifier
                                // unqualified-id: identifier
                                // constant: enumeration-constant
@@ -975,7 +981,7 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
   case tok::annot_typename:
     if (isStartOfObjCClassMessageMissingOpenBracket()) {
       ParsedType Type = getTypeAnnotation(Tok);
-      
+
       // Fake up a Declarator to use with ActOnTypeName.
       DeclSpec DS(AttrFactory);
       DS.SetRangeStart(Tok.getLocation());
@@ -985,7 +991,7 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
       unsigned DiagID;
       DS.SetTypeSpecType(TST_typename, Tok.getAnnotationEndLoc(),
                          PrevSpec, DiagID, Type);
-      
+
       Declarator DeclaratorInfo(DS, Declarator::TypeNameContext);
       TypeResult Ty = Actions.ActOnTypeName(getCurScope(), DeclaratorInfo);
       if (Ty.isInvalid())
@@ -997,7 +1003,7 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
       break;
     }
     // Fall through
-      
+
   case tok::annot_decltype:
   case tok::kw_char:
   case tok::kw_wchar_t:
@@ -1023,8 +1029,9 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
   case tok::kw_image1d_buffer_t:
   case tok::kw_image2d_t:
   case tok::kw_image2d_array_t:
-  case tok::kw_image3d_t: {
-  case tok::kw_event_t:
+  case tok::kw_image3d_t:
+  case tok::kw_sampler_t:
+  case tok::kw_event_t: {
     if (!getLangOpts().CPlusPlus) {
       Diag(Tok, diag::err_expected_expression);
       return ExprError();
@@ -1187,10 +1194,13 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
   case tok::kw___is_union:
   case tok::kw___is_final:
   case tok::kw___has_trivial_constructor:
+  case tok::kw___has_trivial_move_constructor:
   case tok::kw___has_trivial_copy:
   case tok::kw___has_trivial_assign:
+  case tok::kw___has_trivial_move_assign:
   case tok::kw___has_trivial_destructor:
   case tok::kw___has_nothrow_assign:
+  case tok::kw___has_nothrow_move_assign:
   case tok::kw___has_nothrow_copy:
   case tok::kw___has_nothrow_constructor:
   case tok::kw___has_virtual_destructor:
@@ -1404,8 +1414,7 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
       CommaLocsTy CommaLocs;
       
       if (Tok.is(tok::code_completion)) {
-        Actions.CodeCompleteCall(getCurScope(), LHS.get(),
-                                 ArrayRef<Expr *>());
+        Actions.CodeCompleteCall(getCurScope(), LHS.get(), None);
         cutOffParsing();
         return ExprError();
       }
@@ -1609,11 +1618,11 @@ Parser::ParseExprAfterUnaryExprOrTypeTrait(const Token &OpTok,
 ///       unary-expression:  [C99 6.5.3]
 ///         'sizeof' unary-expression
 ///         'sizeof' '(' type-name ')'
-/// [C++0x] 'sizeof' '...' '(' identifier ')'
+/// [C++11] 'sizeof' '...' '(' identifier ')'
 /// [GNU]   '__alignof' unary-expression
 /// [GNU]   '__alignof' '(' type-name ')'
 /// [C11]   '_Alignof' '(' type-name ')'
-/// [C++0x] 'alignof' '(' type-id ')'
+/// [C++11] 'alignof' '(' type-id ')'
 /// \endverbatim
 ExprResult Parser::ParseUnaryExprOrTypeTraitExpression() {
   assert((Tok.is(tok::kw_sizeof) || Tok.is(tok::kw___alignof) ||
@@ -1623,7 +1632,7 @@ ExprResult Parser::ParseUnaryExprOrTypeTraitExpression() {
   Token OpTok = Tok;
   ConsumeToken();
 
-  // [C++0x] 'sizeof' '...' '(' identifier ')'
+  // [C++11] 'sizeof' '...' '(' identifier ')'
   if (Tok.is(tok::ellipsis) && OpTok.is(tok::kw_sizeof)) {
     SourceLocation EllipsisLoc = ConsumeToken();
     SourceLocation LParenLoc, RParenLoc;
@@ -1693,6 +1702,9 @@ ExprResult Parser::ParseUnaryExprOrTypeTraitExpression() {
                                                  /*isType=*/true,
                                                  CastTy.getAsOpaquePtr(),
                                                  CastRange);
+
+  if (OpTok.is(tok::kw_alignof) || OpTok.is(tok::kw__Alignof))
+    Diag(OpTok, diag::ext_alignof_expr) << OpTok.getIdentifierInfo();
 
   // If we get here, the operand to the sizeof/alignof was an expresion.
   if (!Operand.isInvalid())
@@ -1954,12 +1966,16 @@ Parser::ParseParenExpression(ParenParseOption &ExprType, bool stopIfCastExpr,
                       Tok.is(tok::kw___bridge_retained) ||
                       Tok.is(tok::kw___bridge_retain)));
   if (BridgeCast && !getLangOpts().ObjCAutoRefCount) {
-    StringRef BridgeCastName = Tok.getName();
-    SourceLocation BridgeKeywordLoc = ConsumeToken();
-    if (!PP.getSourceManager().isInSystemHeader(BridgeKeywordLoc))
-      Diag(BridgeKeywordLoc, diag::warn_arc_bridge_cast_nonarc)
-        << BridgeCastName
-        << FixItHint::CreateReplacement(BridgeKeywordLoc, "");
+    if (Tok.isNot(tok::kw___bridge)) {
+      StringRef BridgeCastName = Tok.getName();
+      SourceLocation BridgeKeywordLoc = ConsumeToken();
+      if (!PP.getSourceManager().isInSystemHeader(BridgeKeywordLoc))
+        Diag(BridgeKeywordLoc, diag::warn_arc_bridge_cast_nonarc)
+          << BridgeCastName
+          << FixItHint::CreateReplacement(BridgeKeywordLoc, "");
+    }
+    else
+      ConsumeToken(); // consume __bridge
     BridgeCast = false;
   }
   

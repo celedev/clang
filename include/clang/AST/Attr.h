@@ -44,10 +44,16 @@ private:
   unsigned AttrKind : 16;
 
 protected:
+  /// An index into the spelling list of an
+  /// attribute defined in Attr.td file.
+  unsigned SpellingListIndex : 4;
+
   bool Inherited : 1;
 
+  bool IsPackExpansion : 1;
+
   virtual ~Attr();
-  
+
   void* operator new(size_t bytes) throw() {
     llvm_unreachable("Attrs cannot be allocated with regular 'new'.");
   }
@@ -67,14 +73,17 @@ public:
   }
 
 protected:
-  Attr(attr::Kind AK, SourceRange R)
-    : Range(R), AttrKind(AK), Inherited(false) {}
+  Attr(attr::Kind AK, SourceRange R, unsigned SpellingListIndex = 0)
+    : Range(R), AttrKind(AK), SpellingListIndex(SpellingListIndex),
+      Inherited(false), IsPackExpansion(false) {}
 
 public:
 
   attr::Kind getKind() const {
     return static_cast<attr::Kind>(AttrKind);
   }
+  
+  unsigned getSpellingListIndex() const { return SpellingListIndex; }
 
   SourceLocation getLocation() const { return Range.getBegin(); }
   SourceRange getRange() const { return Range; }
@@ -82,8 +91,11 @@ public:
 
   bool isInherited() const { return Inherited; }
 
+  void setPackExpansion(bool PE) { IsPackExpansion = PE; }
+  bool isPackExpansion() const { return IsPackExpansion; }
+
   // Clone this attribute.
-  virtual Attr* clone(ASTContext &C) const = 0;
+  virtual Attr *clone(ASTContext &C) const = 0;
 
   virtual bool isLateParsed() const { return false; }
 
@@ -95,8 +107,8 @@ public:
 class InheritableAttr : public Attr {
   virtual void anchor();
 protected:
-  InheritableAttr(attr::Kind AK, SourceRange R)
-    : Attr(AK, R) {}
+  InheritableAttr(attr::Kind AK, SourceRange R, unsigned SpellingListIndex = 0)
+    : Attr(AK, R, SpellingListIndex) {}
 
 public:
   void setInherited(bool I) { Inherited = I; }
@@ -110,13 +122,31 @@ public:
 class InheritableParamAttr : public InheritableAttr {
   virtual void anchor();
 protected:
-  InheritableParamAttr(attr::Kind AK, SourceRange R)
-    : InheritableAttr(AK, R) {}
+  InheritableParamAttr(attr::Kind AK, SourceRange R,
+                       unsigned SpellingListIndex = 0)
+    : InheritableAttr(AK, R, SpellingListIndex) {}
 
 public:
   // Implement isa/cast/dyncast/etc.
   static bool classof(const Attr *A) {
+    // Relies on relative order of enum emission with respect to MS inheritance
+    // attrs.
     return A->getKind() <= attr::LAST_INHERITABLE_PARAM;
+  }
+};
+
+class MSInheritanceAttr : public InheritableAttr {
+  virtual void anchor();
+protected:
+  MSInheritanceAttr(attr::Kind AK, SourceRange R, unsigned SpellingListIndex = 0)
+    : InheritableAttr(AK, R, SpellingListIndex) {}
+
+public:
+  // Implement isa/cast/dyncast/etc.
+  static bool classof(const Attr *A) {
+    // Relies on relative order of enum emission with respect to param attrs.
+    return (A->getKind() <= attr::LAST_MS_INHERITANCE &&
+            A->getKind() > attr::LAST_INHERITABLE_PARAM);
   }
 };
 

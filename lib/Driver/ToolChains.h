@@ -17,6 +17,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Compiler.h"
 
+#include <vector>
+
 namespace clang {
 namespace driver {
 namespace toolchains {
@@ -117,20 +119,20 @@ protected:
 
   GCCInstallationDetector GCCInstallation;
 
-  mutable llvm::DenseMap<unsigned, Tool*> Tools;
-
 public:
   Generic_GCC(const Driver &D, const llvm::Triple& Triple, const ArgList &Args);
   ~Generic_GCC();
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
-
   virtual bool IsUnwindTablesDefault() const;
   virtual bool isPICDefault() const;
+  virtual bool isPIEDefault() const;
   virtual bool isPICDefaultForced() const;
 
 protected:
+  virtual Tool *getTool(Action::ActionClass AC) const;
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
+
   /// \name ToolChain Implementation Helper Functions
   /// @{
 
@@ -141,6 +143,11 @@ protected:
   bool isTarget32Bit() const { return getTriple().isArch32Bit(); }
 
   /// @}
+
+private:
+  mutable OwningPtr<tools::gcc::Preprocess> Preprocess;
+  mutable OwningPtr<tools::gcc::Precompile> Precompile;
+  mutable OwningPtr<tools::gcc::Compile> Compile;
 };
 
   /// Darwin - The base Darwin tool chain.
@@ -149,8 +156,15 @@ public:
   /// The host version.
   unsigned DarwinVersion[3];
 
+protected:
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
+  virtual Tool *getTool(Action::ActionClass AC) const;
+
 private:
-  mutable llvm::DenseMap<unsigned, Tool*> Tools;
+  mutable OwningPtr<tools::darwin::Lipo> Lipo;
+  mutable OwningPtr<tools::darwin::Dsymutil> Dsymutil;
+  mutable OwningPtr<tools::darwin::VerifyDebug> VerifyDebug;
 
   /// Whether the information on the target has been initialized.
   //
@@ -181,7 +195,7 @@ private:
   void AddDeploymentTarget(DerivedArgList &Args) const;
 
 public:
-  Darwin(const Driver &D, const llvm::Triple& Triple);
+  Darwin(const Driver &D, const llvm::Triple& Triple, const ArgList &Args);
   ~Darwin();
 
   std::string ComputeEffectiveClangTriple(const ArgList &Args,
@@ -269,9 +283,6 @@ public:
   virtual DerivedArgList *TranslateArgs(const DerivedArgList &Args,
                                         const char *BoundArch) const;
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
-
   virtual bool IsBlocksDefault() const {
     // Always allow blocks on Darwin; users interested in versioning are
     // expected to use /usr/include/Blocks.h.
@@ -295,10 +306,6 @@ public:
 
   virtual bool IsMathErrnoDefault() const {
     return false;
-  }
-
-  virtual bool IsObjCDefaultSynthPropertiesDefault() const {
-    return true;
   }
 
   virtual bool IsEncodeExtendedBlockSignatureDefault() const {
@@ -328,6 +335,7 @@ public:
     return ToolChain::RLT_CompilerRT;
   }
   virtual bool isPICDefault() const;
+  virtual bool isPIEDefault() const;
   virtual bool isPICDefaultForced() const;
 
   virtual bool SupportsProfiling() const;
@@ -346,7 +354,7 @@ public:
 /// DarwinClang - The Darwin toolchain used by Clang.
 class LLVM_LIBRARY_VISIBILITY DarwinClang : public Darwin {
 public:
-  DarwinClang(const Driver &D, const llvm::Triple& Triple);
+  DarwinClang(const Driver &D, const llvm::Triple& Triple, const ArgList &Args);
 
   /// @name Darwin ToolChain Implementation
   /// {
@@ -388,7 +396,8 @@ public:
 
   virtual bool IsIntegratedAssemblerDefault() const {
     // Default integrated assembler to on for x86.
-    return (getTriple().getArch() == llvm::Triple::x86 ||
+    return (getTriple().getArch() == llvm::Triple::aarch64 ||
+            getTriple().getArch() == llvm::Triple::x86 ||
             getTriple().getArch() == llvm::Triple::x86_64);
   }
 };
@@ -397,18 +406,20 @@ class LLVM_LIBRARY_VISIBILITY AuroraUX : public Generic_GCC {
 public:
   AuroraUX(const Driver &D, const llvm::Triple& Triple, const ArgList &Args);
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
+protected:
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
 };
 
 class LLVM_LIBRARY_VISIBILITY Solaris : public Generic_GCC {
 public:
   Solaris(const Driver &D, const llvm::Triple& Triple, const ArgList &Args);
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
-
   virtual bool IsIntegratedAssemblerDefault() const { return true; }
+protected:
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
+
 };
 
 
@@ -418,9 +429,15 @@ public:
 
   virtual bool IsMathErrnoDefault() const { return false; }
   virtual bool IsObjCNonFragileABIDefault() const { return true; }
+  virtual bool isPIEDefault() const { return true; }
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
+  virtual unsigned GetDefaultStackProtectorLevel(bool KernelOrKext) const {
+    return 1;
+  }
+
+protected:
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
 };
 
 class LLVM_LIBRARY_VISIBILITY Bitrig : public Generic_ELF {
@@ -431,9 +448,6 @@ public:
   virtual bool IsObjCNonFragileABIDefault() const { return true; }
   virtual bool IsObjCLegacyDispatchDefault() const { return false; }
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
-
   virtual void AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
                                             ArgStringList &CC1Args) const;
   virtual void AddCXXStdlibLibArgs(const ArgList &Args,
@@ -441,6 +455,10 @@ public:
   virtual unsigned GetDefaultStackProtectorLevel(bool KernelOrKext) const {
      return 1;
   }
+
+protected:
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
 };
 
 class LLVM_LIBRARY_VISIBILITY FreeBSD : public Generic_ELF {
@@ -450,9 +468,10 @@ public:
   virtual bool IsMathErrnoDefault() const { return false; }
   virtual bool IsObjCNonFragileABIDefault() const { return true; }
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
   virtual bool UseSjLjExceptions() const;
+protected:
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
 };
 
 class LLVM_LIBRARY_VISIBILITY NetBSD : public Generic_ELF {
@@ -462,16 +481,23 @@ public:
   virtual bool IsMathErrnoDefault() const { return false; }
   virtual bool IsObjCNonFragileABIDefault() const { return true; }
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
+  virtual CXXStdlibType GetCXXStdlibType(const ArgList &Args) const;
+
+  virtual void AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
+                                            ArgStringList &CC1Args) const;
+
+protected:
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
 };
 
 class LLVM_LIBRARY_VISIBILITY Minix : public Generic_ELF {
 public:
   Minix(const Driver &D, const llvm::Triple& Triple, const ArgList &Args);
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
+protected:
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
 };
 
 class LLVM_LIBRARY_VISIBILITY DragonFly : public Generic_ELF {
@@ -480,8 +506,9 @@ public:
 
   virtual bool IsMathErrnoDefault() const { return false; }
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
+protected:
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
 };
 
 class LLVM_LIBRARY_VISIBILITY Linux : public Generic_ELF {
@@ -490,38 +517,45 @@ public:
 
   virtual bool HasNativeLLVMSupport() const;
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
-
   virtual void AddClangSystemIncludeArgs(const ArgList &DriverArgs,
                                          ArgStringList &CC1Args) const;
   virtual void addClangTargetOptions(const ArgList &DriverArgs,
                                      ArgStringList &CC1Args) const;
   virtual void AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
                                             ArgStringList &CC1Args) const;
+  virtual bool isPIEDefault() const;
 
   std::string Linker;
   std::vector<std::string> ExtraOpts;
+  bool IsPIEDefault;
+
+protected:
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
 
 private:
+  static bool addLibStdCXXIncludePaths(Twine Base, Twine Suffix,
+                                       Twine TargetArchDir,
+                                       Twine MultiLibSuffix,
+                                       const ArgList &DriverArgs,
+                                       ArgStringList &CC1Args);
   static bool addLibStdCXXIncludePaths(Twine Base, Twine TargetArchDir,
                                        const ArgList &DriverArgs,
                                        ArgStringList &CC1Args);
+
+  std::string computeSysRoot(const ArgList &Args) const;
 };
 
 class LLVM_LIBRARY_VISIBILITY Hexagon_TC : public Linux {
 protected:
-  mutable llvm::DenseMap<unsigned, Tool*> Tools;
-
   GCCVersion GCCLibAndIncVersion;
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
 
 public:
   Hexagon_TC(const Driver &D, const llvm::Triple &Triple,
              const ArgList &Args);
   ~Hexagon_TC();
-
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
 
   virtual void AddClangSystemIncludeArgs(const ArgList &DriverArgs,
                                          ArgStringList &CC1Args) const;
@@ -540,43 +574,33 @@ public:
 /// all subcommands. See http://tce.cs.tut.fi for our peculiar target.
 class LLVM_LIBRARY_VISIBILITY TCEToolChain : public ToolChain {
 public:
-  TCEToolChain(const Driver &D, const llvm::Triple& Triple);
+  TCEToolChain(const Driver &D, const llvm::Triple& Triple,
+               const ArgList &Args);
   ~TCEToolChain();
 
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
   bool IsMathErrnoDefault() const;
   bool isPICDefault() const;
+  bool isPIEDefault() const;
   bool isPICDefaultForced() const;
-
-private:
-  mutable llvm::DenseMap<unsigned, Tool*> Tools;
-
 };
 
 class LLVM_LIBRARY_VISIBILITY Windows : public ToolChain {
-  mutable llvm::DenseMap<unsigned, Tool*> Tools;
-
 public:
-  Windows(const Driver &D, const llvm::Triple& Triple);
-
-  virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
-                           const ActionList &Inputs) const;
-
-  virtual bool IsObjCDefaultSynthPropertiesDefault() const {
-    return true;
-  }
+  Windows(const Driver &D, const llvm::Triple& Triple, const ArgList &Args);
 
   virtual bool IsIntegratedAssemblerDefault() const;
   virtual bool IsUnwindTablesDefault() const;
   virtual bool isPICDefault() const;
+  virtual bool isPIEDefault() const;
   virtual bool isPICDefaultForced() const;
 
   virtual void AddClangSystemIncludeArgs(const ArgList &DriverArgs,
                                          ArgStringList &CC1Args) const;
   virtual void AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
                                             ArgStringList &CC1Args) const;
-
+protected:
+  virtual Tool *buildLinker() const;
+  virtual Tool *buildAssembler() const;
 };
 
 } // end namespace toolchains

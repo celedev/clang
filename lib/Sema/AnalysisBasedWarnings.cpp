@@ -41,6 +41,7 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/ImmutableMap.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
@@ -157,7 +158,7 @@ static ControlFlowKind CheckFallThrough(AnalysisDeclContext &AC) {
     CFGBlock::const_reverse_iterator ri = B.rbegin(), re = B.rend();
 
     for ( ; ri != re ; ++ri)
-      if (isa<CFGStmt>(*ri))
+      if (ri->getAs<CFGStmt>())
         break;
 
     // No more CFGElements in the block?
@@ -171,7 +172,7 @@ static ControlFlowKind CheckFallThrough(AnalysisDeclContext &AC) {
       continue;
     }
 
-    CFGStmt CS = cast<CFGStmt>(*ri);
+    CFGStmt CS = ri->castAs<CFGStmt>();
     const Stmt *S = CS.getStmt();
     if (isa<ReturnStmt>(S)) {
       HasLiveReturn = true;
@@ -504,7 +505,7 @@ static void DiagUninitUse(Sema &S, const VarDecl *VD, const UninitUse &Use,
     StringRef Str;
     SourceRange Range;
 
-    // FixIts to suppress the diagnosic by removing the dead condition.
+    // FixIts to suppress the diagnostic by removing the dead condition.
     // For all binary terminators, branch 0 is taken if the condition is true,
     // and branch 1 is taken if the condition is false.
     int RemoveDiagKind = -1;
@@ -702,7 +703,38 @@ namespace {
       return FallthroughStmts;
     }
 
+    void fillReachableBlocks(CFG *Cfg) {
+      assert(ReachableBlocks.empty() && "ReachableBlocks already filled");
+      std::deque<const CFGBlock *> BlockQueue;
+
+      ReachableBlocks.insert(&Cfg->getEntry());
+      BlockQueue.push_back(&Cfg->getEntry());
+      // Mark all case blocks reachable to avoid problems with switching on
+      // constants, covered enums, etc.
+      // These blocks can contain fall-through annotations, and we don't want to
+      // issue a warn_fallthrough_attr_unreachable for them.
+      for (CFG::iterator I = Cfg->begin(), E = Cfg->end(); I != E; ++I) {
+        const CFGBlock *B = *I;
+        const Stmt *L = B->getLabel();
+        if (L && isa<SwitchCase>(L) && ReachableBlocks.insert(B))
+          BlockQueue.push_back(B);
+      }
+
+      while (!BlockQueue.empty()) {
+        const CFGBlock *P = BlockQueue.front();
+        BlockQueue.pop_front();
+        for (CFGBlock::const_succ_iterator I = P->succ_begin(),
+                                           E = P->succ_end();
+             I != E; ++I) {
+          if (*I && ReachableBlocks.insert(*I))
+            BlockQueue.push_back(*I);
+        }
+      }
+    }
+
     bool checkFallThroughIntoBlock(const CFGBlock &B, int &AnnotatedCnt) {
+      assert(!ReachableBlocks.empty() && "ReachableBlocks empty");
+
       int UnannotatedCnt = 0;
       AnnotatedCnt = 0;
 
@@ -722,16 +754,21 @@ namespace {
         if (SW && SW->getSubStmt() == B.getLabel() && P->begin() == P->end())
           continue; // Previous case label has no statements, good.
 
-        if (P->pred_begin() == P->pred_end()) {  // The block is unreachable.
-          // This only catches trivially unreachable blocks.
-          for (CFGBlock::const_iterator ElIt = P->begin(), ElEnd = P->end();
-               ElIt != ElEnd; ++ElIt) {
-            if (const CFGStmt *CS = ElIt->getAs<CFGStmt>()){
+        const LabelStmt *L = dyn_cast_or_null<LabelStmt>(P->getLabel());
+        if (L && L->getSubStmt() == B.getLabel() && P->begin() == P->end())
+          continue; // Case label is preceded with a normal label, good.
+
+        if (!ReachableBlocks.count(P)) {
+          for (CFGBlock::const_reverse_iterator ElemIt = P->rbegin(),
+                                                ElemEnd = P->rend();
+               ElemIt != ElemEnd; ++ElemIt) {
+            if (Optional<CFGStmt> CS = ElemIt->getAs<CFGStmt>()) {
               if (const AttributedStmt *AS = asFallThroughAttr(CS->getStmt())) {
                 S.Diag(AS->getLocStart(),
                        diag::warn_fallthrough_attr_unreachable);
                 markFallthroughVisited(AS);
                 ++AnnotatedCnt;
+                break;
               }
               // Don't care about other unreachable statements.
             }
@@ -780,6 +817,10 @@ namespace {
       return true;
     }
 
+    // We don't want to traverse local type declarations. We analyze their
+    // methods separately.
+    bool TraverseDecl(Decl *D) { return true; }
+
   private:
 
     static const AttributedStmt *asFallThroughAttr(const Stmt *S) {
@@ -796,7 +837,7 @@ namespace {
       for (CFGBlock::const_reverse_iterator ElemIt = B.rbegin(),
                                             ElemEnd = B.rend();
                                             ElemIt != ElemEnd; ++ElemIt) {
-        if (const CFGStmt *CS = ElemIt->getAs<CFGStmt>())
+        if (Optional<CFGStmt> CS = ElemIt->getAs<CFGStmt>())
           return CS->getStmt();
       }
       // Workaround to detect a statement thrown out by CFGBuilder:
@@ -812,6 +853,7 @@ namespace {
     bool FoundSwitchStatements;
     AttrStmts FallthroughStmts;
     Sema &S;
+    llvm::SmallPtrSet<const CFGBlock *, 16> ReachableBlocks;
   };
 }
 
@@ -843,16 +885,18 @@ static void DiagnoseSwitchLabelsFallthrough(Sema &S, AnalysisDeclContext &AC,
   if (!Cfg)
     return;
 
-  int AnnotatedCnt;
+  FM.fillReachableBlocks(Cfg);
 
   for (CFG::reverse_iterator I = Cfg->rbegin(), E = Cfg->rend(); I != E; ++I) {
-    const CFGBlock &B = **I;
-    const Stmt *Label = B.getLabel();
+    const CFGBlock *B = *I;
+    const Stmt *Label = B->getLabel();
 
     if (!Label || !isa<SwitchCase>(Label))
       continue;
 
-    if (!FM.checkFallThroughIntoBlock(B, AnnotatedCnt))
+    int AnnotatedCnt;
+
+    if (!FM.checkFallThroughIntoBlock(*B, AnnotatedCnt))
       continue;
 
     S.Diag(Label->getLocStart(),
@@ -864,8 +908,13 @@ static void DiagnoseSwitchLabelsFallthrough(Sema &S, AnalysisDeclContext &AC,
       if (L.isMacroID())
         continue;
       if (S.getLangOpts().CPlusPlus11) {
-        const Stmt *Term = B.getTerminator();
-        if (!(B.empty() && Term && isa<BreakStmt>(Term))) {
+        const Stmt *Term = B->getTerminator();
+        // Skip empty cases.
+        while (B->empty() && !Term && B->succ_size() == 1) {
+          B = *B->succ_begin();
+          Term = B->getTerminator();
+        }
+        if (!(B->empty() && Term && isa<BreakStmt>(Term))) {
           Preprocessor &PP = S.getPreprocessor();
           TokenValue Tokens[] = {
             tok::l_square, tok::l_square, PP.getIdentifierInfo("clang"),
@@ -1105,7 +1154,11 @@ struct SLocSort {
 class UninitValsDiagReporter : public UninitVariablesHandler {
   Sema &S;
   typedef SmallVector<UninitUse, 2> UsesVec;
-  typedef llvm::DenseMap<const VarDecl *, std::pair<UsesVec*, bool> > UsesMap;
+  typedef std::pair<UsesVec*, bool> MappedType;
+  // Prefer using MapVector to DenseMap, so that iteration order will be
+  // the same as insertion order. This is needed to obtain a deterministic
+  // order of diagnostics when calling flushDiagnostics().
+  typedef llvm::MapVector<const VarDecl *, MappedType> UsesMap;
   UsesMap *uses;
   
 public:
@@ -1114,11 +1167,11 @@ public:
     flushDiagnostics();
   }
 
-  std::pair<UsesVec*, bool> &getUses(const VarDecl *vd) {
+  MappedType &getUses(const VarDecl *vd) {
     if (!uses)
       uses = new UsesMap();
 
-    UsesMap::mapped_type &V = (*uses)[vd];
+    MappedType &V = (*uses)[vd];
     UsesVec *&vec = V.first;
     if (!vec)
       vec = new UsesVec();
@@ -1137,12 +1190,10 @@ public:
   void flushDiagnostics() {
     if (!uses)
       return;
-    
-    // FIXME: This iteration order, and thus the resulting diagnostic order,
-    //        is nondeterministic.
+
     for (UsesMap::iterator i = uses->begin(), e = uses->end(); i != e; ++i) {
       const VarDecl *vd = i->first;
-      const UsesMap::mapped_type &V = i->second;
+      const MappedType &V = i->second;
 
       UsesVec *vec = V.first;
       bool hasSelfInit = V.second;
@@ -1282,8 +1333,12 @@ class ThreadSafetyReporter : public clang::thread_safety::ThreadSafetyHandler {
       LocEndOfScope = FunEndLocation;
 
     PartialDiagnosticAt Warning(LocEndOfScope, S.PDiag(DiagID) << LockName);
-    PartialDiagnosticAt Note(LocLocked, S.PDiag(diag::note_locked_here));
-    Warnings.push_back(DelayedDiag(Warning, OptionalNotes(1, Note)));
+    if (LocLocked.isValid()) {
+      PartialDiagnosticAt Note(LocLocked, S.PDiag(diag::note_locked_here));
+      Warnings.push_back(DelayedDiag(Warning, OptionalNotes(1, Note)));
+      return;
+    }
+    Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
   }
 
 

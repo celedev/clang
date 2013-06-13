@@ -41,6 +41,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/PathV1.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
@@ -212,14 +213,15 @@ public:
 
     switch (Opts->AnalysisConstraintsOpt) {
     default:
-      llvm_unreachable("Unknown store manager.");
+      llvm_unreachable("Unknown constraint manager.");
 #define ANALYSIS_CONSTRAINTS(NAME, CMDFLAG, DESC, CREATEFN)     \
       case NAME##Model: CreateConstraintMgr = CREATEFN; break;
 #include "clang/StaticAnalyzer/Core/Analyses.def"
     }
   }
 
-  void DisplayFunction(const Decl *D, AnalysisMode Mode) {
+  void DisplayFunction(const Decl *D, AnalysisMode Mode,
+                       ExprEngine::InliningModes IMode) {
     if (!Opts->AnalyzerDisplayProgress)
       return;
 
@@ -230,8 +232,18 @@ public:
 
       if (Mode == AM_Syntax)
         llvm::errs() << " (Syntax)";
-      else if (Mode == AM_Path)
-        llvm::errs() << " (Path)";
+      else if (Mode == AM_Path) {
+        llvm::errs() << " (Path, ";
+        switch (IMode) {
+          case ExprEngine::Inline_Minimal:
+            llvm::errs() << " Inline_Minimal";
+            break;
+          case ExprEngine::Inline_Regular:
+            llvm::errs() << " Inline_Regular";
+            break;
+        }
+        llvm::errs() << ")";
+      }
       else
         assert(Mode == (AM_Syntax | AM_Path) && "Unexpected mode!");
 
@@ -273,7 +285,8 @@ public:
   virtual void HandleTranslationUnit(ASTContext &C);
 
   /// \brief Determine which inlining mode should be used when this function is
-  /// analyzed. For example, determines if the callees should be inlined.
+  /// analyzed. This allows to redefine the default inlining policies when
+  /// analyzing a given function.
   ExprEngine::InliningModes
   getInliningModeForFunction(const Decl *D, SetOfConstDecls Visited);
 
@@ -288,7 +301,7 @@ public:
   /// set of functions which should be considered analyzed after analyzing the
   /// given root function.
   void HandleCode(Decl *D, AnalysisMode Mode,
-                  ExprEngine::InliningModes IMode = ExprEngine::Inline_None,
+                  ExprEngine::InliningModes IMode = ExprEngine::Inline_Minimal,
                   SetOfConstDecls *VisitedCallees = 0);
 
   void RunPathSensitiveChecks(Decl *D,
@@ -399,22 +412,18 @@ static bool shouldSkipFunction(const Decl *D,
 ExprEngine::InliningModes
 AnalysisConsumer::getInliningModeForFunction(const Decl *D,
                                              SetOfConstDecls Visited) {
-  ExprEngine::InliningModes HowToInline =
-      (Mgr->shouldInlineCall()) ? ExprEngine::Inline_All :
-                                  ExprEngine::Inline_None;
-
   // We want to reanalyze all ObjC methods as top level to report Retain
-  // Count naming convention errors more aggressively. But we can turn off
+  // Count naming convention errors more aggressively. But we should tune down
   // inlining when reanalyzing an already inlined function.
   if (Visited.count(D)) {
     assert(isa<ObjCMethodDecl>(D) &&
            "We are only reanalyzing ObjCMethods.");
     const ObjCMethodDecl *ObjCM = cast<ObjCMethodDecl>(D);
     if (ObjCM->getMethodFamily() != OMF_init)
-      HowToInline = ExprEngine::Inline_None;
+      return ExprEngine::Inline_Minimal;
   }
 
-  return HowToInline;
+  return ExprEngine::Inline_Regular;
 }
 
 void AnalysisConsumer::HandleDeclsCallGraph(const unsigned LocalTUDeclsSize) {
@@ -569,7 +578,7 @@ void AnalysisConsumer::HandleCode(Decl *D, AnalysisMode Mode,
   if (Mode == AM_None)
     return;
 
-  DisplayFunction(D, Mode);
+  DisplayFunction(D, Mode, IMode);
   CFG *DeclCFG = Mgr->getCFG(D);
   if (DeclCFG) {
     unsigned CFGSize = DeclCFG->size();
@@ -584,7 +593,7 @@ void AnalysisConsumer::HandleCode(Decl *D, AnalysisMode Mode,
     checkerMgr->runCheckersOnASTBody(D, *Mgr, BR);
   if ((Mode & AM_Path) && checkerMgr->hasPathSensitiveCheckers()) {
     RunPathSensitiveChecks(D, IMode, VisitedCallees);
-    if (IMode != ExprEngine::Inline_None)
+    if (IMode != ExprEngine::Inline_Minimal)
       NumFunctionsAnalyzed++;
   }
 }
@@ -616,7 +625,7 @@ void AnalysisConsumer::ActionExprEngine(Decl *D, bool ObjCGCEnabled,
 
   // Execute the worklist algorithm.
   Eng.ExecuteWorkList(Mgr->getAnalysisDeclContextManager().getStackFrame(D),
-                      Mgr->options.MaxNodes);
+                      Mgr->options.getMaxNodesPerTopLevelFunction());
 
   // Release the auditor (if any) so that it doesn't monitor the graph
   // created BugReporter.
@@ -761,13 +770,13 @@ UbigraphViz::~UbigraphViz() {
   Out.reset(0);
   llvm::errs() << "Running 'ubiviz' program... ";
   std::string ErrMsg;
-  llvm::sys::Path Ubiviz = llvm::sys::Program::FindProgramByName("ubiviz");
+  std::string Ubiviz = llvm::sys::FindProgramByName("ubiviz");
   std::vector<const char*> args;
   args.push_back(Ubiviz.c_str());
   args.push_back(Filename.c_str());
   args.push_back(0);
 
-  if (llvm::sys::Program::ExecuteAndWait(Ubiviz, &args[0],0,0,0,0,&ErrMsg)) {
+  if (llvm::sys::ExecuteAndWait(Ubiviz, &args[0], 0, 0, 0, 0, &ErrMsg)) {
     llvm::errs() << "Error viewing graph: " << ErrMsg << "\n";
   }
 

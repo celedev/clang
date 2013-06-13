@@ -19,7 +19,7 @@
 #include "clang/Lex/ModuleLoader.h"
 #include "clang/Lex/PreprocessorOptions.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/Support/PathV2.h"
+#include "llvm/Support/Path.h"
 #include "gtest/gtest.h"
 
 using namespace llvm;
@@ -38,7 +38,9 @@ class VoidModuleLoader : public ModuleLoader {
   }
 
   virtual void makeModuleVisible(Module *Mod,
-                                 Module::NameVisibilityKind Visibility) { }
+                                 Module::NameVisibilityKind Visibility,
+                                 SourceLocation ImportLoc,
+                                 bool Complain) { }
 };
 
 // Stub to collect data from InclusionDirective callbacks.
@@ -109,7 +111,7 @@ protected:
       // Add header's parent path to search path.
       StringRef SearchPath = path::parent_path(HeaderPath);
       const DirectoryEntry *DE = FileMgr.getDirectory(SearchPath);
-      DirectoryLookup DL(DE, SrcMgr::C_User, true, false);
+      DirectoryLookup DL(DE, SrcMgr::C_User, false);
       HeaderInfo.AddSearchPath(DL, IsSystemHeader);
   }
 

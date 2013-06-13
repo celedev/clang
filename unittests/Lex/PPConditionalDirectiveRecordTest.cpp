@@ -61,7 +61,9 @@ class VoidModuleLoader : public ModuleLoader {
   }
 
   virtual void makeModuleVisible(Module *Mod,
-                                 Module::NameVisibilityKind Visibility) { }
+                                 Module::NameVisibilityKind Visibility,
+                                 SourceLocation ImportLoc,
+                                 bool Complain) { }
 };
 
 TEST_F(PPConditionalDirectiveRecordTest, PPRecAPI) {

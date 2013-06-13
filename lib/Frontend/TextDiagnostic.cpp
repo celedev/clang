@@ -8,19 +8,19 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Frontend/TextDiagnostic.h"
-#include "clang/Basic/ConvertUTF.h"
+#include "clang/Basic/CharInfo.h"
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Locale.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
-#include <cctype>
 
 using namespace clang;
 
@@ -336,23 +336,20 @@ static void selectInterestingSourceRegion(std::string &SourceLine,
   if (MaxColumns <= Columns)
     return;
 
-  // no special characters allowed in CaretLine or FixItInsertionLine
+  // No special characters are allowed in CaretLine.
   assert(CaretLine.end() ==
          std::find_if(CaretLine.begin(), CaretLine.end(),
-         char_out_of_range(' ','~')));
-  assert(FixItInsertionLine.end() ==
-         std::find_if(FixItInsertionLine.begin(), FixItInsertionLine.end(),
          char_out_of_range(' ','~')));
 
   // Find the slice that we need to display the full caret line
   // correctly.
   unsigned CaretStart = 0, CaretEnd = CaretLine.size();
   for (; CaretStart != CaretEnd; ++CaretStart)
-    if (!isspace(static_cast<unsigned char>(CaretLine[CaretStart])))
+    if (!isWhitespace(CaretLine[CaretStart]))
       break;
 
   for (; CaretEnd != CaretStart; --CaretEnd)
-    if (!isspace(static_cast<unsigned char>(CaretLine[CaretEnd - 1])))
+    if (!isWhitespace(CaretLine[CaretEnd - 1]))
       break;
 
   // caret has already been inserted into CaretLine so the above whitespace
@@ -363,15 +360,22 @@ static void selectInterestingSourceRegion(std::string &SourceLine,
   if (!FixItInsertionLine.empty()) {
     unsigned FixItStart = 0, FixItEnd = FixItInsertionLine.size();
     for (; FixItStart != FixItEnd; ++FixItStart)
-      if (!isspace(static_cast<unsigned char>(FixItInsertionLine[FixItStart])))
+      if (!isWhitespace(FixItInsertionLine[FixItStart]))
         break;
 
     for (; FixItEnd != FixItStart; --FixItEnd)
-      if (!isspace(static_cast<unsigned char>(FixItInsertionLine[FixItEnd - 1])))
+      if (!isWhitespace(FixItInsertionLine[FixItEnd - 1]))
         break;
 
-    CaretStart = std::min(FixItStart, CaretStart);
-    CaretEnd = std::max(FixItEnd, CaretEnd);
+    // We can safely use the byte offset FixItStart as the column offset
+    // because the characters up until FixItStart are all ASCII whitespace
+    // characters.
+    unsigned FixItStartCol = FixItStart;
+    unsigned FixItEndCol
+      = llvm::sys::locale::columnWidth(FixItInsertionLine.substr(0, FixItEnd));
+
+    CaretStart = std::min(FixItStartCol, CaretStart);
+    CaretEnd = std::max(FixItEndCol, CaretEnd);
   }
 
   // CaretEnd may have been set at the middle of a character
@@ -423,14 +427,13 @@ static void selectInterestingSourceRegion(std::string &SourceLine,
       // Skip over any whitespace we see here; we're looking for
       // another bit of interesting text.
       // FIXME: Detect non-ASCII whitespace characters too.
-      while (NewStart &&
-             isspace(static_cast<unsigned char>(SourceLine[NewStart])))
+      while (NewStart && isWhitespace(SourceLine[NewStart]))
         NewStart = map.startOfPreviousColumn(NewStart);
 
       // Skip over this bit of "interesting" text.
       while (NewStart) {
         unsigned Prev = map.startOfPreviousColumn(NewStart);
-        if (isspace(static_cast<unsigned char>(SourceLine[Prev])))
+        if (isWhitespace(SourceLine[Prev]))
           break;
         NewStart = Prev;
       }
@@ -450,13 +453,11 @@ static void selectInterestingSourceRegion(std::string &SourceLine,
       // Skip over any whitespace we see here; we're looking for
       // another bit of interesting text.
       // FIXME: Detect non-ASCII whitespace characters too.
-      while (NewEnd < SourceLine.size() &&
-             isspace(static_cast<unsigned char>(SourceLine[NewEnd])))
+      while (NewEnd < SourceLine.size() && isWhitespace(SourceLine[NewEnd]))
         NewEnd = map.startOfNextColumn(NewEnd);
 
       // Skip over this bit of "interesting" text.
-      while (NewEnd < SourceLine.size() &&
-             !isspace(static_cast<unsigned char>(SourceLine[NewEnd])))
+      while (NewEnd < SourceLine.size() && isWhitespace(SourceLine[NewEnd]))
         NewEnd = map.startOfNextColumn(NewEnd);
 
       assert(map.byteToColumn(NewEnd) != -1);
@@ -517,7 +518,7 @@ static void selectInterestingSourceRegion(std::string &SourceLine,
 /// greater than or equal to Idx or, if no such character exists,
 /// returns the end of the string.
 static unsigned skipWhitespace(unsigned Idx, StringRef Str, unsigned Length) {
-  while (Idx < Length && isspace(Str[Idx]))
+  while (Idx < Length && isWhitespace(Str[Idx]))
     ++Idx;
   return Idx;
 }
@@ -562,7 +563,7 @@ static unsigned findEndOfWord(unsigned Start, StringRef Str,
   char EndPunct = findMatchingPunctuation(Str[Start]);
   if (!EndPunct) {
     // This is a normal word. Just find the first space character.
-    while (End < Length && !isspace(Str[End]))
+    while (End < Length && !isWhitespace(Str[End]))
       ++End;
     return End;
   }
@@ -581,7 +582,7 @@ static unsigned findEndOfWord(unsigned Start, StringRef Str,
   }
 
   // Find the first space character after the punctuation ended.
-  while (End < Length && !isspace(Str[End]))
+  while (End < Length && !isWhitespace(Str[End]))
     ++End;
 
   unsigned PunctWordLength = End - Start;
@@ -961,7 +962,7 @@ static void highlightRange(const CharSourceRange &R,
     // Pick the last non-whitespace column.
     if (EndColNo > map.getSourceLine().size())
       EndColNo = map.getSourceLine().size();
-    while (EndColNo-1 &&
+    while (EndColNo &&
            (map.getSourceLine()[EndColNo-1] == ' ' ||
             map.getSourceLine()[EndColNo-1] == '\t'))
       EndColNo = map.startOfPreviousColumn(EndColNo);
@@ -1026,24 +1027,18 @@ static std::string buildFixItInsertionLine(unsigned LineNo,
         if (HintCol < PrevHintEndCol)
           HintCol = PrevHintEndCol + 1;
 
-        // FIXME: This function handles multibyte characters in the source, but
-        // not in the fixits. This assertion is intended to catch unintended
-        // use of multibyte characters in fixits. If we decide to do this, we'll
-        // have to track separate byte widths for the source and fixit lines.
-        assert((size_t)llvm::sys::locale::columnWidth(I->CodeToInsert) ==
-               I->CodeToInsert.size());
-
-        // This relies on one byte per column in our fixit hints.
         // This should NOT use HintByteOffset, because the source might have
         // Unicode characters in earlier columns.
-        unsigned LastColumnModified = HintCol + I->CodeToInsert.size();
-        if (LastColumnModified > FixItInsertionLine.size())
-          FixItInsertionLine.resize(LastColumnModified, ' ');
+        unsigned NewFixItLineSize = FixItInsertionLine.size() +
+          (HintCol - PrevHintEndCol) + I->CodeToInsert.size();
+        if (NewFixItLineSize > FixItInsertionLine.size())
+          FixItInsertionLine.resize(NewFixItLineSize, ' ');
 
         std::copy(I->CodeToInsert.begin(), I->CodeToInsert.end(),
-                  FixItInsertionLine.begin() + HintCol);
+                  FixItInsertionLine.end() - I->CodeToInsert.size());
 
-        PrevHintEndCol = LastColumnModified;
+        PrevHintEndCol =
+          HintCol + llvm::sys::locale::columnWidth(I->CodeToInsert);
       } else {
         FixItInsertionLine.clear();
         break;
@@ -1096,17 +1091,25 @@ void TextDiagnostic::emitSnippetAndCaret(
 
   unsigned LineNo = SM.getLineNumber(FID, FileOffset);
   unsigned ColNo = SM.getColumnNumber(FID, FileOffset);
+  
+  // Arbitrarily stop showing snippets when the line is too long.
+  static const size_t MaxLineLengthToPrint = 4096;
+  if (ColNo > MaxLineLengthToPrint)
+    return;
 
   // Rewind from the current position to the start of the line.
   const char *TokPtr = BufStart+FileOffset;
   const char *LineStart = TokPtr-ColNo+1; // Column # is 1-based.
-
 
   // Compute the line end.  Scan forward from the error position to the end of
   // the line.
   const char *LineEnd = TokPtr;
   while (*LineEnd != '\n' && *LineEnd != '\r' && *LineEnd != '\0')
     ++LineEnd;
+
+  // Arbitrarily stop showing snippets when the line is too long.
+  if (size_t(LineEnd - LineStart) > MaxLineLengthToPrint)
+    return;
 
   // Copy the line of code into an std::string for ease of manipulation.
   std::string SourceLine(LineStart, LineEnd);

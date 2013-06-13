@@ -54,6 +54,8 @@ public:
 /// then loading that module.
 class ModuleLoader {
 public:
+  ModuleLoader() : HadFatalFailure(false) {}
+
   virtual ~ModuleLoader();
   
   /// \brief Attempt to load the given module.
@@ -82,7 +84,11 @@ public:
 
   /// \brief Make the given module visible.
   virtual void makeModuleVisible(Module *Mod,
-                                 Module::NameVisibilityKind Visibility) = 0;
+                                 Module::NameVisibilityKind Visibility,
+                                 SourceLocation ImportLoc,
+                                 bool Complain) = 0;
+
+  bool HadFatalFailure;
 };
   
 }

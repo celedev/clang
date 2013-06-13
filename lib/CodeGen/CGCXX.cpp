@@ -106,8 +106,7 @@ bool CodeGenModule::TryEmitDefinitionAsAlias(GlobalDecl AliasDecl,
 
   // The alias will use the linkage of the referrent.  If we can't
   // support aliases with that linkage, fail.
-  llvm::GlobalValue::LinkageTypes Linkage
-    = getFunctionLinkage(cast<FunctionDecl>(AliasDecl.getDecl()));
+  llvm::GlobalValue::LinkageTypes Linkage = getFunctionLinkage(AliasDecl);
 
   switch (Linkage) {
   // We can definitely emit aliases to definitions with external linkage.
@@ -132,7 +131,7 @@ bool CodeGenModule::TryEmitDefinitionAsAlias(GlobalDecl AliasDecl,
   }
 
   llvm::GlobalValue::LinkageTypes TargetLinkage
-    = getFunctionLinkage(cast<FunctionDecl>(TargetDecl.getDecl()));
+    = getFunctionLinkage(TargetDecl);
 
   if (llvm::GlobalValue::isWeakForLinker(TargetLinkage))
     return true;
@@ -183,14 +182,16 @@ void CodeGenModule::EmitCXXConstructors(const CXXConstructorDecl *D) {
 
   // The constructor used for constructing this as a base class;
   // ignores virtual bases.
-  EmitGlobal(GlobalDecl(D, Ctor_Base));
+  if (getTarget().getCXXABI().hasConstructorVariants())
+    EmitGlobal(GlobalDecl(D, Ctor_Base));
 }
 
 void CodeGenModule::EmitCXXConstructor(const CXXConstructorDecl *ctor,
                                        CXXCtorType ctorType) {
   // The complete constructor is equivalent to the base constructor
   // for classes with no virtual bases.  Try to emit it as an alias.
-  if (ctorType == Ctor_Complete &&
+  if (getTarget().getCXXABI().hasConstructorVariants() &&
+      ctorType == Ctor_Complete &&
       !ctor->getParent()->getNumVBases() &&
       !TryEmitDefinitionAsAlias(GlobalDecl(ctor, Ctor_Complete),
                                 GlobalDecl(ctor, Ctor_Base)))
@@ -201,7 +202,7 @@ void CodeGenModule::EmitCXXConstructor(const CXXConstructorDecl *ctor,
 
   llvm::Function *fn =
     cast<llvm::Function>(GetAddrOfCXXConstructor(ctor, ctorType, &fnInfo));
-  setFunctionLinkage(ctor, fn);
+  setFunctionLinkage(GlobalDecl(ctor, ctorType), fn);
 
   CodeGenFunction(*this).GenerateCode(GlobalDecl(ctor, ctorType), fn, fnInfo);
 
@@ -265,7 +266,7 @@ void CodeGenModule::EmitCXXDestructor(const CXXDestructorDecl *dtor,
 
   llvm::Function *fn =
     cast<llvm::Function>(GetAddrOfCXXDestructor(dtor, dtorType, &fnInfo));
-  setFunctionLinkage(dtor, fn);
+  setFunctionLinkage(GlobalDecl(dtor, dtorType), fn);
 
   CodeGenFunction(*this).GenerateCode(GlobalDecl(dtor, dtorType), fn, fnInfo);
 

@@ -368,11 +368,6 @@ void ConstStructBuilder::ConvertStructToPacked() {
 }
                             
 bool ConstStructBuilder::Build(InitListExpr *ILE) {
-  if (ILE->initializesStdInitializerList()) {
-    //CGM.ErrorUnsupported(ILE, "global std::initializer_list");
-    return false;
-  }
-
   RecordDecl *RD = ILE->getType()->getAs<RecordType>()->getDecl();
   const ASTRecordLayout &Layout = CGM.getContext().getASTRecordLayout(RD);
 
@@ -757,6 +752,12 @@ public:
     return Visit(DAE->getExpr());
   }
 
+  llvm::Constant *VisitCXXDefaultInitExpr(CXXDefaultInitExpr *DIE) {
+    // No need for a DefaultInitExprScope: we don't handle 'this' in a
+    // constant expression.
+    return Visit(DIE->getExpr());
+  }
+
   llvm::Constant *VisitMaterializeTemporaryExpr(MaterializeTemporaryExpr *E) {
     return Visit(E->GetTemporaryExpr());
   }
@@ -997,6 +998,15 @@ public:
     case Expr::CXXUuidofExprClass: {
       return CGM.GetAddrOfUuidDescriptor(cast<CXXUuidofExpr>(E));
     }
+    case Expr::MaterializeTemporaryExprClass: {
+      MaterializeTemporaryExpr *MTE = cast<MaterializeTemporaryExpr>(E);
+      assert(MTE->getStorageDuration() == SD_Static);
+      SmallVector<const Expr *, 2> CommaLHSs;
+      SmallVector<SubobjectAdjustment, 2> Adjustments;
+      const Expr *Inner = MTE->GetTemporaryExpr()
+          ->skipRValueSubobjectAdjustments(CommaLHSs, Adjustments);
+      return CGM.GetAddrOfGlobalTemporary(MTE, Inner);
+    }
     }
 
     return 0;
@@ -1018,8 +1028,7 @@ llvm::Constant *CodeGenModule::EmitConstantInit(const VarDecl &D,
       if (const CXXConstructExpr *E =
           dyn_cast_or_null<CXXConstructExpr>(D.getInit())) {
         const CXXConstructorDecl *CD = E->getConstructor();
-        if (CD->isTrivial() && CD->isDefaultConstructor() &&
-            Ty->getAsCXXRecordDecl()->hasTrivialDestructor())
+        if (CD->isTrivial() && CD->isDefaultConstructor())
           return EmitNullConstant(D.getType());
       }
   }
@@ -1140,7 +1149,8 @@ llvm::Constant *CodeGenModule::EmitConstantValue(const APValue &Value,
   }
   case APValue::Float: {
     const llvm::APFloat &Init = Value.getFloat();
-    if (&Init.getSemantics() == &llvm::APFloat::IEEEhalf)
+    if (&Init.getSemantics() == &llvm::APFloat::IEEEhalf &&
+         !Context.getLangOpts().NativeHalfType)
       return llvm::ConstantInt::get(VMContext, Init.bitcastToAPInt());
     else
       return llvm::ConstantFP::get(VMContext, Init);
@@ -1213,6 +1223,8 @@ llvm::Constant *CodeGenModule::EmitConstantValue(const APValue &Value,
       if (I < NumInitElts)
         C = EmitConstantValueForMemory(Value.getArrayInitializedElt(I),
                                        CAT->getElementType(), CGF);
+      else
+        assert(Filler && "Missing filler for implicit elements of initializer");
       if (I == 0)
         CommonElementType = C->getType();
       else if (C->getType() != CommonElementType)

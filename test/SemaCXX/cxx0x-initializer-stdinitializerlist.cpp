@@ -144,7 +144,7 @@ namespace PR12119 {
   template<typename T> void g(std::initializer_list<std::initializer_list<T>>);
 
   void foo() {
-    f({0, {1}});
+    f({0, {1}}); // expected-warning{{braces around scalar initializer}}
     g({{0, 1}, {2, 3}});
     std::initializer_list<int> il = {1, 2};
     g({il, {2, 3}});
@@ -198,4 +198,23 @@ namespace initlist_of_array {
   void h() {
     f({{1,2},{3,4}});
   }
+}
+
+namespace init_list_deduction_failure {
+  void f();
+  void f(int);
+  template<typename T> void g(std::initializer_list<T>);
+  // expected-note@-1 {{candidate template ignored: couldn't resolve reference to overloaded function 'f'}}
+  void h() { g({f}); }
+  // expected-error@-1 {{no matching function for call to 'g'}}
+}
+
+namespace deleted_copy {
+  struct X {
+    X(int i) {}
+    X(const X& x) = delete; // expected-note {{here}}
+    void operator=(const X& x) = delete;
+  };
+
+  std::initializer_list<X> x{1}; // expected-error {{invokes deleted constructor}}
 }

@@ -112,7 +112,14 @@ class CompilerInstance : public ModuleLoader {
   /// \brief The result of the last module import.
   ///
   ModuleLoadResult LastModuleImportResult;
-  
+
+  /// \brief Whether we should (re)build the global module index once we
+  /// have finished with this translation unit.
+  bool BuildGlobalModuleIndex;
+
+  /// \brief One or more modules failed to build.
+  bool ModuleBuildFailed;
+
   /// \brief Holds information about the output file.
   ///
   /// If TempFilename is not empty we must rename it to Filename at the end.
@@ -185,6 +192,15 @@ public:
 
   /// setInvocation - Replace the current invocation.
   void setInvocation(CompilerInvocation *Value);
+
+  /// \brief Indicates whether we should (re)build the global module index.
+  bool shouldBuildGlobalModuleIndex() const;
+  
+  /// \brief Set the flag indicating whether we should (re)build the global
+  /// module index.
+  void setBuildGlobalModuleIndex(bool Build) {
+    BuildGlobalModuleIndex = Build;
+  }
 
   /// }
   /// @name Forwarding Methods
@@ -379,7 +395,7 @@ public:
   /// @name ASTConsumer
   /// {
 
-  bool hasASTConsumer() const { return Consumer != 0; }
+  bool hasASTConsumer() const { return Consumer.isValid(); }
 
   ASTConsumer &getASTConsumer() const {
     assert(Consumer && "Compiler instance has no AST consumer!");
@@ -397,7 +413,7 @@ public:
   /// }
   /// @name Semantic analysis
   /// {
-  bool hasSema() const { return TheSema != 0; }
+  bool hasSema() const { return TheSema.isValid(); }
   
   Sema &getSema() const { 
     assert(TheSema && "Compiler instance has no Sema object!");
@@ -411,12 +427,15 @@ public:
   /// {
 
   ASTReader *getModuleManager() const { return ModuleManager; }
+  void setModuleManager(ASTReader *Reader) { ModuleManager = Reader; }
 
   /// }
   /// @name Code Completion
   /// {
 
-  bool hasCodeCompletionConsumer() const { return CompletionConsumer != 0; }
+  bool hasCodeCompletionConsumer() const {
+    return CompletionConsumer.isValid();
+  }
 
   CodeCompleteConsumer &getCodeCompletionConsumer() const {
     assert(CompletionConsumer &&
@@ -438,7 +457,7 @@ public:
   /// @name Frontend timer
   /// {
 
-  bool hasFrontendTimer() const { return FrontendTimer != 0; }
+  bool hasFrontendTimer() const { return FrontendTimer.isValid(); }
 
   llvm::Timer &getFrontendTimer() const {
     assert(FrontendTimer && "Compiler instance has no frontend timer!");
@@ -476,12 +495,8 @@ public:
   ///
   /// \param ShouldOwnClient If Client is non-NULL, specifies whether 
   /// the diagnostic object should take ownership of the client.
-  ///
-  /// \param ShouldCloneClient If Client is non-NULL, specifies whether that
-  /// client should be cloned.
   void createDiagnostics(DiagnosticConsumer *Client = 0,
-                         bool ShouldOwnClient = true,
-                         bool ShouldCloneClient = true);
+                         bool ShouldOwnClient = true);
 
   /// Create a DiagnosticsEngine object with a the TextDiagnosticPrinter.
   ///
@@ -505,7 +520,6 @@ public:
   createDiagnostics(DiagnosticOptions *Opts,
                     DiagnosticConsumer *Client = 0,
                     bool ShouldOwnClient = true,
-                    bool ShouldCloneClient = true,
                     const CodeGenOptions *CodeGenOpts = 0);
 
   /// Create the file manager and replace any existing one with it.
@@ -536,7 +550,8 @@ public:
                              bool DisablePCHValidation,
                              bool AllowPCHWithCompilerErrors,
                              Preprocessor &PP, ASTContext &Context,
-                             void *DeserializationListener, bool Preamble);
+                             void *DeserializationListener, bool Preamble,
+                             bool UseGlobalModuleIndex);
 
   /// Create a code completion consumer using the invocation; note that this
   /// will cause the source manager to truncate the input source file at the
@@ -645,7 +660,13 @@ public:
                                       bool IsInclusionDirective);
 
   virtual void makeModuleVisible(Module *Mod,
-                                 Module::NameVisibilityKind Visibility);
+                                 Module::NameVisibilityKind Visibility,
+                                 SourceLocation ImportLoc,
+                                 bool Complain);
+
+  bool hadModuleLoaderFatalFailure() const {
+    return ModuleLoader::HadFatalFailure;
+  }
 
 };
 

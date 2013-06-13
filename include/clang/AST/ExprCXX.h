@@ -29,6 +29,7 @@ class CXXConstructorDecl;
 class CXXDestructorDecl;
 class CXXMethodDecl;
 class CXXTemporary;
+class MSPropertyDecl;
 class TemplateArgumentListInfo;
 class UuidAttr;
 
@@ -179,14 +180,16 @@ class CXXNamedCastExpr : public ExplicitCastExpr {
 private:
   SourceLocation Loc; // the location of the casting op
   SourceLocation RParenLoc; // the location of the right parenthesis
+  SourceRange AngleBrackets; // range for '<' '>'
 
 protected:
   CXXNamedCastExpr(StmtClass SC, QualType ty, ExprValueKind VK,
                    CastKind kind, Expr *op, unsigned PathSize,
                    TypeSourceInfo *writtenTy, SourceLocation l,
-                   SourceLocation RParenLoc)
+                   SourceLocation RParenLoc,
+                   SourceRange AngleBrackets)
     : ExplicitCastExpr(SC, ty, VK, kind, op, PathSize, writtenTy), Loc(l),
-      RParenLoc(RParenLoc) {}
+      RParenLoc(RParenLoc), AngleBrackets(AngleBrackets) {}
 
   explicit CXXNamedCastExpr(StmtClass SC, EmptyShell Shell, unsigned PathSize)
     : ExplicitCastExpr(SC, Shell, PathSize) { }
@@ -205,6 +208,7 @@ public:
 
   SourceLocation getLocStart() const LLVM_READONLY { return Loc; }
   SourceLocation getLocEnd() const LLVM_READONLY { return RParenLoc; }
+  SourceRange getAngleBrackets() const LLVM_READONLY { return AngleBrackets; }
 
   static bool classof(const Stmt *T) {
     switch (T->getStmtClass()) {
@@ -227,9 +231,10 @@ public:
 class CXXStaticCastExpr : public CXXNamedCastExpr {
   CXXStaticCastExpr(QualType ty, ExprValueKind vk, CastKind kind, Expr *op,
                     unsigned pathSize, TypeSourceInfo *writtenTy,
-                    SourceLocation l, SourceLocation RParenLoc)
+                    SourceLocation l, SourceLocation RParenLoc,
+                    SourceRange AngleBrackets)
     : CXXNamedCastExpr(CXXStaticCastExprClass, ty, vk, kind, op, pathSize,
-                       writtenTy, l, RParenLoc) {}
+                       writtenTy, l, RParenLoc, AngleBrackets) {}
 
   explicit CXXStaticCastExpr(EmptyShell Empty, unsigned PathSize)
     : CXXNamedCastExpr(CXXStaticCastExprClass, Empty, PathSize) { }
@@ -239,7 +244,8 @@ public:
                                    ExprValueKind VK, CastKind K, Expr *Op,
                                    const CXXCastPath *Path,
                                    TypeSourceInfo *Written, SourceLocation L,
-                                   SourceLocation RParenLoc);
+                                   SourceLocation RParenLoc,
+                                   SourceRange AngleBrackets);
   static CXXStaticCastExpr *CreateEmpty(ASTContext &Context,
                                         unsigned PathSize);
 
@@ -257,9 +263,10 @@ public:
 class CXXDynamicCastExpr : public CXXNamedCastExpr {
   CXXDynamicCastExpr(QualType ty, ExprValueKind VK, CastKind kind,
                      Expr *op, unsigned pathSize, TypeSourceInfo *writtenTy,
-                     SourceLocation l, SourceLocation RParenLoc)
+                     SourceLocation l, SourceLocation RParenLoc,
+                     SourceRange AngleBrackets)
     : CXXNamedCastExpr(CXXDynamicCastExprClass, ty, VK, kind, op, pathSize,
-                       writtenTy, l, RParenLoc) {}
+                       writtenTy, l, RParenLoc, AngleBrackets) {}
 
   explicit CXXDynamicCastExpr(EmptyShell Empty, unsigned pathSize)
     : CXXNamedCastExpr(CXXDynamicCastExprClass, Empty, pathSize) { }
@@ -269,7 +276,8 @@ public:
                                     ExprValueKind VK, CastKind Kind, Expr *Op,
                                     const CXXCastPath *Path,
                                     TypeSourceInfo *Written, SourceLocation L,
-                                    SourceLocation RParenLoc);
+                                    SourceLocation RParenLoc,
+                                    SourceRange AngleBrackets);
 
   static CXXDynamicCastExpr *CreateEmpty(ASTContext &Context,
                                          unsigned pathSize);
@@ -291,9 +299,10 @@ class CXXReinterpretCastExpr : public CXXNamedCastExpr {
   CXXReinterpretCastExpr(QualType ty, ExprValueKind vk, CastKind kind,
                          Expr *op, unsigned pathSize,
                          TypeSourceInfo *writtenTy, SourceLocation l,
-                         SourceLocation RParenLoc)
+                         SourceLocation RParenLoc,
+                         SourceRange AngleBrackets)
     : CXXNamedCastExpr(CXXReinterpretCastExprClass, ty, vk, kind, op,
-                       pathSize, writtenTy, l, RParenLoc) {}
+                       pathSize, writtenTy, l, RParenLoc, AngleBrackets) {}
 
   CXXReinterpretCastExpr(EmptyShell Empty, unsigned pathSize)
     : CXXNamedCastExpr(CXXReinterpretCastExprClass, Empty, pathSize) { }
@@ -303,7 +312,8 @@ public:
                                         ExprValueKind VK, CastKind Kind,
                                         Expr *Op, const CXXCastPath *Path,
                                  TypeSourceInfo *WrittenTy, SourceLocation L,
-                                        SourceLocation RParenLoc);
+                                        SourceLocation RParenLoc,
+                                        SourceRange AngleBrackets);
   static CXXReinterpretCastExpr *CreateEmpty(ASTContext &Context,
                                              unsigned pathSize);
 
@@ -320,9 +330,9 @@ public:
 class CXXConstCastExpr : public CXXNamedCastExpr {
   CXXConstCastExpr(QualType ty, ExprValueKind VK, Expr *op,
                    TypeSourceInfo *writtenTy, SourceLocation l,
-                   SourceLocation RParenLoc)
+                   SourceLocation RParenLoc, SourceRange AngleBrackets)
     : CXXNamedCastExpr(CXXConstCastExprClass, ty, VK, CK_NoOp, op,
-                       0, writtenTy, l, RParenLoc) {}
+                       0, writtenTy, l, RParenLoc, AngleBrackets) {}
 
   explicit CXXConstCastExpr(EmptyShell Empty)
     : CXXNamedCastExpr(CXXConstCastExprClass, Empty, 0) { }
@@ -331,7 +341,8 @@ public:
   static CXXConstCastExpr *Create(ASTContext &Context, QualType T,
                                   ExprValueKind VK, Expr *Op,
                                   TypeSourceInfo *WrittenTy, SourceLocation L,
-                                  SourceLocation RParenLoc);
+                                  SourceLocation RParenLoc,
+                                  SourceRange AngleBrackets);
   static CXXConstCastExpr *CreateEmpty(ASTContext &Context);
 
   static bool classof(const Stmt *T) {
@@ -463,6 +474,45 @@ public:
   child_range children() { return child_range(); }
 };
 
+/// \brief Implicit construction of a std::initializer_list<T> object from an
+/// array temporary within list-initialization (C++11 [dcl.init.list]p5).
+class CXXStdInitializerListExpr : public Expr {
+  Stmt *SubExpr;
+
+  CXXStdInitializerListExpr(EmptyShell Empty)
+    : Expr(CXXStdInitializerListExprClass, Empty), SubExpr(0) {}
+
+public:
+  CXXStdInitializerListExpr(QualType Ty, Expr *SubExpr)
+    : Expr(CXXStdInitializerListExprClass, Ty, VK_RValue, OK_Ordinary,
+           Ty->isDependentType(), SubExpr->isValueDependent(),
+           SubExpr->isInstantiationDependent(),
+           SubExpr->containsUnexpandedParameterPack()),
+      SubExpr(SubExpr) {}
+
+  Expr *getSubExpr() { return static_cast<Expr*>(SubExpr); }
+  const Expr *getSubExpr() const { return static_cast<const Expr*>(SubExpr); }
+
+  SourceLocation getLocStart() const LLVM_READONLY {
+    return SubExpr->getLocStart();
+  }
+  SourceLocation getLocEnd() const LLVM_READONLY {
+    return SubExpr->getLocEnd();
+  }
+  SourceRange getSourceRange() const LLVM_READONLY {
+    return SubExpr->getSourceRange();
+  }
+
+  static bool classof(const Stmt *S) {
+    return S->getStmtClass() == CXXStdInitializerListExprClass;
+  }
+
+  child_range children() { return child_range(&SubExpr, &SubExpr + 1); }
+
+  friend class ASTReader;
+  friend class ASTStmtReader;
+};
+
 /// CXXTypeidExpr - A C++ @c typeid expression (C++ [expr.typeid]), which gets
 /// the type_info that corresponds to the supplied type, or the (possibly
 /// dynamic) type of the supplied expression.
@@ -548,6 +598,64 @@ public:
     Stmt **begin = reinterpret_cast<Stmt**>(&Operand);
     return child_range(begin, begin + 1);
   }
+};
+
+/// A member reference to an MSPropertyDecl.  This expression always
+/// has pseudo-object type, and therefore it is typically not
+/// encountered in a fully-typechecked expression except within the
+/// syntactic form of a PseudoObjectExpr.
+class MSPropertyRefExpr : public Expr {
+  Expr *BaseExpr;
+  MSPropertyDecl *TheDecl;
+  SourceLocation MemberLoc;
+  bool IsArrow;
+  NestedNameSpecifierLoc QualifierLoc;
+
+public:
+  MSPropertyRefExpr(Expr *baseExpr, MSPropertyDecl *decl, bool isArrow,
+                    QualType ty, ExprValueKind VK,
+                    NestedNameSpecifierLoc qualifierLoc,
+                    SourceLocation nameLoc)
+  : Expr(MSPropertyRefExprClass, ty, VK, OK_Ordinary,
+         /*type-dependent*/ false, baseExpr->isValueDependent(),
+         baseExpr->isInstantiationDependent(),
+         baseExpr->containsUnexpandedParameterPack()),
+    BaseExpr(baseExpr), TheDecl(decl),
+    MemberLoc(nameLoc), IsArrow(isArrow),
+    QualifierLoc(qualifierLoc) {}
+
+  MSPropertyRefExpr(EmptyShell Empty) : Expr(MSPropertyRefExprClass, Empty) {}
+
+  SourceRange getSourceRange() const LLVM_READONLY {
+    return SourceRange(getLocStart(), getLocEnd());
+  }
+  bool isImplicitAccess() const {
+    return getBaseExpr() && getBaseExpr()->isImplicitCXXThis();
+  }
+  SourceLocation getLocStart() const {
+    if (!isImplicitAccess())
+      return BaseExpr->getLocStart();
+    else if (QualifierLoc)
+      return QualifierLoc.getBeginLoc();
+    else
+        return MemberLoc;
+  }
+  SourceLocation getLocEnd() const { return getMemberLoc(); }
+
+  child_range children() {
+    return child_range((Stmt**)&BaseExpr, (Stmt**)&BaseExpr + 1);
+  }
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == MSPropertyRefExprClass;
+  }
+
+  Expr *getBaseExpr() const { return BaseExpr; }
+  MSPropertyDecl *getPropertyDecl() const { return TheDecl; }
+  bool isArrow() const { return IsArrow; }
+  SourceLocation getMemberLoc() const { return MemberLoc; }
+  NestedNameSpecifierLoc getQualifierLoc() const { return QualifierLoc; }
+
+  friend class ASTStmtReader;
 };
 
 /// CXXUuidofExpr - A microsoft C++ @c __uuidof expression, which gets
@@ -813,6 +921,53 @@ public:
 
   friend class ASTStmtReader;
   friend class ASTStmtWriter;
+};
+
+/// \brief This wraps a use of a C++ default initializer (technically,
+/// a brace-or-equal-initializer for a non-static data member) when it
+/// is implicitly used in a mem-initializer-list in a constructor
+/// (C++11 [class.base.init]p8) or in aggregate initialization
+/// (C++1y [dcl.init.aggr]p7).
+class CXXDefaultInitExpr : public Expr {
+  /// \brief The field whose default is being used.
+  FieldDecl *Field;
+
+  /// \brief The location where the default initializer expression was used.
+  SourceLocation Loc;
+
+  CXXDefaultInitExpr(ASTContext &C, SourceLocation Loc, FieldDecl *Field,
+                     QualType T);
+
+  CXXDefaultInitExpr(EmptyShell Empty) : Expr(CXXDefaultInitExprClass, Empty) {}
+
+public:
+  // Field is the non-static data member whose default initializer is used
+  // by this expression.
+  static CXXDefaultInitExpr *Create(ASTContext &C, SourceLocation Loc,
+                                    FieldDecl *Field) {
+    return new (C) CXXDefaultInitExpr(C, Loc, Field, Field->getType());
+  }
+
+  // Get the field whose initializer will be used.
+  FieldDecl *getField() { return Field; }
+  const FieldDecl *getField() const { return Field; }
+
+  // Get the initialization expression that will be used.
+  const Expr *getExpr() const { return Field->getInClassInitializer(); }
+  Expr *getExpr() { return Field->getInClassInitializer(); }
+
+  SourceLocation getLocStart() const LLVM_READONLY { return Loc; }
+  SourceLocation getLocEnd() const LLVM_READONLY { return Loc; }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == CXXDefaultInitExprClass;
+  }
+
+  // Iterators
+  child_range children() { return child_range(); }
+
+  friend class ASTReader;
+  friend class ASTStmtReader;
 };
 
 /// CXXTemporary - Represents a C++ temporary.
@@ -1140,7 +1295,7 @@ class LambdaExpr : public Expr {
     /// capture was implicit.
     Capture_Implicit = 0x01,
 
-    /// \brief Flag used by the Capture class to indciate that the
+    /// \brief Flag used by the Capture class to indicate that the
     /// given capture was by-copy.
     Capture_ByCopy = 0x02
   };
@@ -1183,7 +1338,7 @@ class LambdaExpr : public Expr {
 public:
   /// \brief Describes the capture of either a variable or 'this'.
   class Capture {
-    llvm::PointerIntPair<VarDecl *, 2> VarAndBits;
+    llvm::PointerIntPair<Decl *, 2> DeclAndBits;
     SourceLocation Loc;
     SourceLocation EllipsisLoc;
     
@@ -1199,7 +1354,8 @@ public:
     ///
     /// \param Implicit Whether the capture was implicit or explicit.
     ///
-    /// \param Var The local variable being captured, or null if capturing this.
+    /// \param Var The local variable being captured, or null if capturing this
+    ///        or if this is an init-capture.
     ///
     /// \param EllipsisLoc The location of the ellipsis (...) for a
     /// capture that is a pack expansion, or an invalid source
@@ -1208,29 +1364,43 @@ public:
             LambdaCaptureKind Kind, VarDecl *Var = 0,
             SourceLocation EllipsisLoc = SourceLocation());
 
+    /// \brief Create a new init-capture.
+    Capture(FieldDecl *Field);
+
     /// \brief Determine the kind of capture.
     LambdaCaptureKind getCaptureKind() const;
 
     /// \brief Determine whether this capture handles the C++ 'this'
     /// pointer.
-    bool capturesThis() const { return VarAndBits.getPointer() == 0; }
+    bool capturesThis() const { return DeclAndBits.getPointer() == 0; }
 
     /// \brief Determine whether this capture handles a variable.
-    bool capturesVariable() const { return VarAndBits.getPointer() != 0; }
+    bool capturesVariable() const {
+      return dyn_cast_or_null<VarDecl>(DeclAndBits.getPointer());
+    }
+
+    /// \brief Determines whether this is an init-capture.
+    bool isInitCapture() const { return getCaptureKind() == LCK_Init; }
 
     /// \brief Retrieve the declaration of the local variable being
     /// captured.
     ///
-    /// This operation is only valid if this capture does not capture
-    /// 'this'.
-    VarDecl *getCapturedVar() const { 
-      assert(!capturesThis() && "No variable available for 'this' capture");
-      return VarAndBits.getPointer();
+    /// This operation is only valid if this capture is a variable capture
+    /// (other than a capture of 'this').
+    VarDecl *getCapturedVar() const {
+      assert(capturesVariable() && "No variable available for 'this' capture");
+      return cast<VarDecl>(DeclAndBits.getPointer());
+    }
+
+    /// \brief Retrieve the field for an init-capture.
+    FieldDecl *getInitCaptureField() const {
+      assert(getCaptureKind() == LCK_Init && "no field for non-init-capture");
+      return cast<FieldDecl>(DeclAndBits.getPointer());
     }
 
     /// \brief Determine whether this was an implicit capture (not
     /// written between the square brackets introducing the lambda).
-    bool isImplicit() const { return VarAndBits.getInt() & Capture_Implicit; }
+    bool isImplicit() const { return DeclAndBits.getInt() & Capture_Implicit; }
 
     /// \brief Determine whether this was an explicit capture, written
     /// between the square brackets introducing the lambda.
@@ -1365,6 +1535,16 @@ public:
   /// initialization argument for this lambda expression.
   capture_init_iterator capture_init_end() const {
     return capture_init_begin() + NumCaptures;    
+  }
+
+  /// \brief Retrieve the initializer for an init-capture.
+  Expr *getInitCaptureInit(capture_iterator Capture) {
+    assert(Capture >= explicit_capture_begin() &&
+           Capture <= explicit_capture_end() && Capture->isInitCapture());
+    return capture_init_begin()[Capture - capture_begin()];
+  }
+  const Expr *getInitCaptureInit(capture_iterator Capture) const {
+    return const_cast<LambdaExpr*>(this)->getInitCaptureInit(Capture);
   }
 
   /// \brief Retrieve the set of index variables used in the capture 
@@ -1819,7 +1999,7 @@ public:
   /// \brief Determines whether this member expression actually had
   /// a C++ nested-name-specifier prior to the name of the member, e.g.,
   /// x->Base::foo.
-  bool hasQualifier() const { return QualifierLoc; }
+  bool hasQualifier() const { return QualifierLoc.hasQualifier(); }
 
   /// \brief Retrieves the nested-name-specifier that qualifies the type name,
   /// with source-location information.
@@ -2427,7 +2607,7 @@ public:
   ///
   /// This points to the same data as getExplicitTemplateArgs(), but
   /// returns null if there are no explicit template arguments.
-  const ASTTemplateArgumentListInfo *getOptionalExplicitTemplateArgs() {
+  const ASTTemplateArgumentListInfo *getOptionalExplicitTemplateArgs() const {
     if (!hasExplicitTemplateArgs()) return 0;
     return &getExplicitTemplateArgs();
   }
@@ -2665,7 +2845,7 @@ public:
   /// \brief Retrieves the optional explicit template arguments.
   /// This points to the same data as getExplicitTemplateArgs(), but
   /// returns null if there are no explicit template arguments.
-  const ASTTemplateArgumentListInfo *getOptionalExplicitTemplateArgs() {
+  const ASTTemplateArgumentListInfo *getOptionalExplicitTemplateArgs() const {
     if (!hasExplicitTemplateArgs()) return 0;
     return &getExplicitTemplateArgs();
   }
@@ -3083,7 +3263,7 @@ public:
   /// \brief Retrieves the optional explicit template arguments.
   /// This points to the same data as getExplicitTemplateArgs(), but
   /// returns null if there are no explicit template arguments.
-  const ASTTemplateArgumentListInfo *getOptionalExplicitTemplateArgs() {
+  const ASTTemplateArgumentListInfo *getOptionalExplicitTemplateArgs() const {
     if (!hasExplicitTemplateArgs()) return 0;
     return &getExplicitTemplateArgs();
   }
@@ -3246,6 +3426,10 @@ public:
   // expression refers to.
   SourceLocation getMemberLoc() const { return getNameLoc(); }
 
+  // \brief Return the preferred location (the member name) for the arrow when
+  // diagnosing a problem with this expression.
+  SourceLocation getExprLoc() const LLVM_READONLY { return getMemberLoc(); }
+
   SourceLocation getLocStart() const LLVM_READONLY {
     if (!isImplicitAccess())
       return Base->getLocStart();
@@ -3346,7 +3530,7 @@ class PackExpansionExpr : public Expr {
 
 public:
   PackExpansionExpr(QualType T, Expr *Pattern, SourceLocation EllipsisLoc,
-                    llvm::Optional<unsigned> NumExpansions)
+                    Optional<unsigned> NumExpansions)
     : Expr(PackExpansionExprClass, T, Pattern->getValueKind(),
            Pattern->getObjectKind(), /*TypeDependent=*/true,
            /*ValueDependent=*/true, /*InstantiationDependent=*/true,
@@ -3369,11 +3553,11 @@ public:
 
   /// \brief Determine the number of expansions that will be produced when
   /// this pack expansion is instantiated, if already known.
-  llvm::Optional<unsigned> getNumExpansions() const {
+  Optional<unsigned> getNumExpansions() const {
     if (NumExpansions)
       return NumExpansions - 1;
 
-    return llvm::Optional<unsigned>();
+    return None;
   }
 
   SourceLocation getLocStart() const LLVM_READONLY {
@@ -3679,30 +3863,60 @@ public:
 /// binds to the temporary. \c MaterializeTemporaryExprs are always glvalues
 /// (either an lvalue or an xvalue, depending on the kind of reference binding
 /// to it), maintaining the invariant that references always bind to glvalues.
+///
+/// Reference binding and copy-elision can both extend the lifetime of a
+/// temporary. When either happens, the expression will also track the
+/// declaration which is responsible for the lifetime extension.
 class MaterializeTemporaryExpr : public Expr {
+public:
   /// \brief The temporary-generating expression whose value will be
   /// materialized.
   Stmt *Temporary;
+
+  /// \brief The declaration which lifetime-extended this reference, if any.
+  /// Either a VarDecl, or (for a ctor-initializer) a FieldDecl.
+  const ValueDecl *ExtendingDecl;
 
   friend class ASTStmtReader;
   friend class ASTStmtWriter;
 
 public:
   MaterializeTemporaryExpr(QualType T, Expr *Temporary,
-                           bool BoundToLvalueReference)
+                           bool BoundToLvalueReference,
+                           const ValueDecl *ExtendedBy)
     : Expr(MaterializeTemporaryExprClass, T,
            BoundToLvalueReference? VK_LValue : VK_XValue, OK_Ordinary,
            Temporary->isTypeDependent(), Temporary->isValueDependent(),
            Temporary->isInstantiationDependent(),
            Temporary->containsUnexpandedParameterPack()),
-      Temporary(Temporary) { }
+      Temporary(Temporary), ExtendingDecl(ExtendedBy) {
+  }
 
   MaterializeTemporaryExpr(EmptyShell Empty)
     : Expr(MaterializeTemporaryExprClass, Empty) { }
 
   /// \brief Retrieve the temporary-generating subexpression whose value will
   /// be materialized into a glvalue.
-  Expr *GetTemporaryExpr() const { return reinterpret_cast<Expr *>(Temporary); }
+  Expr *GetTemporaryExpr() const { return static_cast<Expr *>(Temporary); }
+
+  /// \brief Retrieve the storage duration for the materialized temporary.
+  StorageDuration getStorageDuration() const {
+    if (!ExtendingDecl)
+      return SD_FullExpression;
+    // FIXME: This is not necessarily correct for a temporary materialized
+    // within a default initializer.
+    if (isa<FieldDecl>(ExtendingDecl))
+      return SD_Automatic;
+    return cast<VarDecl>(ExtendingDecl)->getStorageDuration();
+  }
+
+  /// \brief Get the declaration which triggered the lifetime-extension of this
+  /// temporary, if any.
+  const ValueDecl *getExtendingDecl() const { return ExtendingDecl; }
+
+  void setExtendingDecl(const ValueDecl *ExtendedBy) {
+    ExtendingDecl = ExtendedBy;
+  }
 
   /// \brief Determine whether this materialized temporary is bound to an
   /// lvalue reference; otherwise, it's bound to an rvalue reference.

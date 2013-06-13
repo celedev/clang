@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -triple i386-apple-darwin9 -analyze -analyzer-checker=core,alpha.core -analyzer-store=region -verify -fblocks -analyzer-ipa=inlining -analyzer-opt-analyze-nested-blocks %s -fexceptions -fcxx-exceptions
-// RUN: %clang_cc1 -triple x86_64-apple-darwin9 -analyze -analyzer-checker=core,alpha.core -analyzer-store=region -verify -fblocks -analyzer-ipa=inlining -analyzer-opt-analyze-nested-blocks %s -fexceptions -fcxx-exceptions
+// RUN: %clang_cc1 -triple i386-apple-darwin9 -analyze -analyzer-checker=core,alpha.core -analyzer-store=region -verify -fblocks -analyzer-opt-analyze-nested-blocks %s -fexceptions -fcxx-exceptions
+// RUN: %clang_cc1 -triple x86_64-apple-darwin9 -analyze -analyzer-checker=core,alpha.core -analyzer-store=region -verify -fblocks -analyzer-opt-analyze-nested-blocks %s -fexceptions -fcxx-exceptions
 
 // Test basic handling of references.
 char &test1_aux();
@@ -719,5 +719,24 @@ void rdar12964481_b(_ComplexT *y) {
    _ComplexT x;
    // Eventually this should be a warning.
    *y *= x; // no-warning
+}
+
+// Test case for PR 12921.  This previously produced
+// a bogus warning.
+static const int pr12921_arr[] = { 0, 1 };
+static const int pr12921_arrcount = sizeof(pr12921_arr)/sizeof(int);
+
+int pr12921(int argc, char **argv) {
+  int i, retval;
+  for (i = 0; i < pr12921_arrcount; i++) {
+    if (argc == i) {
+      retval = i;
+      break;
+    }
+  }
+
+  // No match
+  if (i == pr12921_arrcount) return 66;
+  return pr12921_arr[retval];
 }
 

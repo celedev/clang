@@ -16,6 +16,7 @@
 
 #include "clang/AST/AttrIterator.h"
 #include "clang/AST/DeclarationName.h"
+#include "clang/Basic/Linkage.h"
 #include "clang/Basic/Specifiers.h"
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/Support/Compiler.h"
@@ -31,6 +32,7 @@ class DeclarationName;
 class DependentDiagnostic;
 class EnumDecl;
 class FunctionDecl;
+class LinkageComputer;
 class LinkageSpecDecl;
 class Module;
 class NamedDecl;
@@ -135,7 +137,7 @@ public:
     /// or member ends up here.
     IDNS_Ordinary            = 0x0020,
 
-    /// Objective C @protocol.
+    /// Objective C \@protocol.
     IDNS_ObjCProtocol        = 0x0040,
 
     /// This declaration is a friend function.  A friend function
@@ -284,19 +286,14 @@ protected:
   /// IdentifierNamespace - This specifies what IDNS_* namespace this lives in.
   unsigned IdentifierNamespace : 12;
 
-  /// \brief Whether the \c CachedLinkage field is active.
-  ///
-  /// This field is only valid for NamedDecls subclasses.
-  mutable unsigned HasCachedLinkage : 1;
-
-  /// \brief If \c HasCachedLinkage, the linkage of this declaration.
-  ///
-  /// This field is only valid for NamedDecls subclasses.
-  mutable unsigned CachedLinkage : 2;
+  /// \brief If 0, we have not computed the linkage of this declaration.
+  /// Otherwise, it is the linkage + 1.
+  mutable unsigned CacheValidAndLinkage : 3;
 
   friend class ASTDeclWriter;
   friend class ASTDeclReader;
   friend class ASTReader;
+  friend class LinkageComputer;
 
 private:
   void CheckAccessDeclContext() const;
@@ -309,7 +306,7 @@ protected:
       HasAttrs(false), Implicit(false), Used(false), Referenced(false),
       Access(AS_none), FromASTFile(0), Hidden(0),
       IdentifierNamespace(getIdentifierNamespaceForKind(DK)),
-      HasCachedLinkage(0)
+      CacheValidAndLinkage(0)
   {
     if (StatisticsEnabled) add(DK);
   }
@@ -319,7 +316,7 @@ protected:
       HasAttrs(false), Implicit(false), Used(false), Referenced(false),
       Access(AS_none), FromASTFile(0), Hidden(0),
       IdentifierNamespace(getIdentifierNamespaceForKind(DK)),
-      HasCachedLinkage(0)
+      CacheValidAndLinkage(0)
   {
     if (StatisticsEnabled) add(DK);
   }
@@ -337,7 +334,22 @@ protected:
   static void *AllocateDeserializedDecl(const ASTContext &Context,
                                         unsigned ID,
                                         unsigned Size);
-  
+
+  /// \brief Update a potentially out-of-date declaration.
+  void updateOutOfDate(IdentifierInfo &II) const;
+
+  Linkage getCachedLinkage() const {
+    return Linkage(CacheValidAndLinkage - 1);
+  }
+
+  void setCachedLinkage(Linkage L) const {
+    CacheValidAndLinkage = L + 1;
+  }
+
+  bool hasCachedLinkage() const {
+    return CacheValidAndLinkage;
+  }
+
 public:
 
   /// \brief Source range that this declaration covers.
@@ -369,10 +381,13 @@ public:
     return const_cast<Decl*>(this)->getDeclContext();
   }
 
-  /// Finds the innermost non-closure context of this declaration.
-  /// That is, walk out the DeclContext chain, skipping any blocks.
-  DeclContext *getNonClosureContext();
-  const DeclContext *getNonClosureContext() const {
+  /// Find the innermost non-closure ancestor of this declaration,
+  /// walking up through blocks, lambdas, etc.  If that ancestor is
+  /// not a code context (!isFunctionOrMethod()), returns null.
+  ///
+  /// A declaration may be its own non-closure context.
+  Decl *getNonClosureContext();
+  const Decl *getNonClosureContext() const {
     return const_cast<Decl*>(this)->getNonClosureContext();
   }
 
@@ -396,6 +411,12 @@ public:
 #ifndef NDEBUG
     CheckAccessDeclContext();
 #endif
+    return AccessSpecifier(Access);
+  }
+
+  /// \brief Retrieve the access specifier for this declaration, even though
+  /// it may not yet have been properly set.
+  AccessSpecifier getAccessUnsafe() const {
     return AccessSpecifier(Access);
   }
 
@@ -765,8 +786,10 @@ public:
   ///  top-level Stmt* of that body.  Otherwise this method returns null.
   virtual Stmt* getBody() const { return 0; }
 
-  /// \brief Returns true if this Decl represents a declaration for a body of
+  /// \brief Returns true if this \c Decl represents a declaration for a body of
   /// code, such as a function or method definition.
+  /// Note that \c hasBody can also return true if any redeclaration of this
+  /// \c Decl represents a declaration for a body of code.
   virtual bool hasBody() const { return getBody() != 0; }
 
   /// getBodyRBrace - Gets the right brace of the body, if a body exists.
@@ -862,6 +885,8 @@ public:
                          unsigned Indentation = 0);
   // Debuggers don't usually respect default arguments.
   LLVM_ATTRIBUTE_USED void dump() const;
+  // Same as dump(), but forces color printing.
+  LLVM_ATTRIBUTE_USED void dumpColor() const;
   void dump(raw_ostream &Out) const;
   // Debuggers don't usually respect default arguments.
   LLVM_ATTRIBUTE_USED void dumpXML() const;
@@ -926,19 +951,26 @@ class DeclContext {
   /// \brief Whether this declaration context also has some external
   /// storage that contains additional declarations that are lexically
   /// part of this context.
-  mutable unsigned ExternalLexicalStorage : 1;
+  mutable bool ExternalLexicalStorage : 1;
 
   /// \brief Whether this declaration context also has some external
   /// storage that contains additional declarations that are visible
   /// in this context.
-  mutable unsigned ExternalVisibleStorage : 1;
+  mutable bool ExternalVisibleStorage : 1;
+
+  /// \brief Whether this declaration context has had external visible
+  /// storage added since the last lookup. In this case, \c LookupPtr's
+  /// invariant may not hold and needs to be fixed before we perform
+  /// another lookup.
+  mutable bool NeedToReconcileExternalVisibleStorage : 1;
 
   /// \brief Pointer to the data structure used to lookup declarations
   /// within this context (or a DependentStoredDeclsMap if this is a
   /// dependent context), and a bool indicating whether we have lazily
   /// omitted any declarations from the map. We maintain the invariant
-  /// that, if the map contains an entry for a DeclarationName, then it
-  /// contains all relevant entries for that name.
+  /// that, if the map contains an entry for a DeclarationName (and we
+  /// haven't lazily omitted anything), then it contains all relevant
+  /// entries for that name.
   mutable llvm::PointerIntPair<StoredDeclsMap*, 1, bool> LookupPtr;
 
 protected:
@@ -961,10 +993,11 @@ protected:
   static std::pair<Decl *, Decl *>
   BuildDeclChain(ArrayRef<Decl*> Decls, bool FieldsAlreadyLoaded);
 
-   DeclContext(Decl::Kind K)
-     : DeclKind(K), ExternalLexicalStorage(false),
-       ExternalVisibleStorage(false), LookupPtr(0, false), FirstDecl(0),
-       LastDecl(0) { }
+  DeclContext(Decl::Kind K)
+      : DeclKind(K), ExternalLexicalStorage(false),
+        ExternalVisibleStorage(false),
+        NeedToReconcileExternalVisibleStorage(false), LookupPtr(0, false),
+        FirstDecl(0), LastDecl(0) {}
 
 public:
   ~DeclContext();
@@ -1027,6 +1060,7 @@ public:
   bool isFunctionOrMethod() const {
     switch (DeclKind) {
     case Decl::Block:
+    case Decl::Captured:
     case Decl::ObjCMethod:
       return true;
     default:
@@ -1073,10 +1107,6 @@ public:
   /// C++0x scoped enums), and C++ linkage specifications.
   bool isTransparentContext() const;
 
-  /// \brief Determines whether this context is, or is nested within,
-  /// a C++ extern "C" linkage spec.
-  bool isExternCContext() const;
-
   /// \brief Determine whether this declaration context is equivalent
   /// to the declaration context DC.
   bool Equals(const DeclContext *DC) const {
@@ -1090,8 +1120,8 @@ public:
   /// \brief Find the nearest non-closure ancestor of this context,
   /// i.e. the innermost semantic parent of this context which is not
   /// a closure.  A context may be its own non-closure ancestor.
-  DeclContext *getNonClosureAncestor();
-  const DeclContext *getNonClosureAncestor() const {
+  Decl *getNonClosureAncestor();
+  const Decl *getNonClosureAncestor() const {
     return const_cast<DeclContext*>(this)->getNonClosureAncestor();
   }
 
@@ -1385,6 +1415,9 @@ public:
 
   /// @brief Removes a declaration from this context.
   void removeDecl(Decl *D);
+    
+  /// @brief Checks whether a declaration is in this context.
+  bool containsDecl(Decl *D) const;
 
   /// lookup_iterator - An iterator that provides access to the results
   /// of looking up a name within this context.
@@ -1464,9 +1497,9 @@ public:
   // Low-level accessors
     
   /// \brief Mark the lookup table as needing to be built.  This should be
-  /// used only if setHasExternalLexicalStorage() has been called.
+  /// used only if setHasExternalLexicalStorage() has been called on any
+  /// decl context for which this is the primary context.
   void setMustBuildLookupTable() {
-    assert(ExternalLexicalStorage && "Requires external lexical storage");
     LookupPtr.setInt(true);
   }
 
@@ -1495,6 +1528,8 @@ public:
   /// declarations visible in this context.
   void setHasExternalVisibleStorage(bool ES = true) {
     ExternalVisibleStorage = ES;
+    if (ES && LookupPtr.getPointer())
+      NeedToReconcileExternalVisibleStorage = true;
   }
 
   /// \brief Determine whether the given declaration is stored in the list of
@@ -1510,6 +1545,7 @@ public:
   LLVM_ATTRIBUTE_USED void dumpDeclContext() const;
 
 private:
+  void reconcileExternalVisibleStorage();
   void LoadLexicalDeclsFromExternalStorage() const;
 
   /// @brief Makes a declaration visible within this context, but

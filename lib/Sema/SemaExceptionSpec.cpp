@@ -124,7 +124,7 @@ Sema::ResolveExceptionSpec(SourceLocation Loc, const FunctionProtoType *FPT) {
     return SourceFPT;
 
   // Compute or instantiate the exception specification now.
-  if (FPT->getExceptionSpecType() == EST_Unevaluated)
+  if (SourceFPT->getExceptionSpecType() == EST_Unevaluated)
     EvaluateImplicitExceptionSpec(Loc, cast<CXXMethodDecl>(SourceDecl));
   else
     InstantiateExceptionSpec(Loc, SourceDecl);
@@ -204,9 +204,7 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
     FunctionProtoType::ExtProtoInfo EPI = NewProto->getExtProtoInfo();
     EPI.ExceptionSpecType = EST_DynamicNone;
     QualType NewType = Context.getFunctionType(NewProto->getResultType(),
-                                               NewProto->arg_type_begin(),
-                                               NewProto->getNumArgs(),
-                                               EPI);
+                                               NewProto->getArgTypes(), EPI);
     New->setType(NewType);
     return false;
   }
@@ -228,9 +226,7 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
     // Update the type of the function with the appropriate exception
     // specification.
     QualType NewType = Context.getFunctionType(NewProto->getResultType(),
-                                               NewProto->arg_type_begin(),
-                                               NewProto->getNumArgs(),
-                                               EPI);
+                                               NewProto->getArgTypes(), EPI);
     New->setType(NewType);
 
     // If exceptions are disabled, suppress the warning about missing
@@ -294,8 +290,8 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
     SourceLocation FixItLoc;
     if (TypeSourceInfo *TSInfo = New->getTypeSourceInfo()) {
       TypeLoc TL = TSInfo->getTypeLoc().IgnoreParens();
-      if (const FunctionTypeLoc *FTLoc = dyn_cast<FunctionTypeLoc>(&TL))
-        FixItLoc = PP.getLocForEndOfToken(FTLoc->getLocalRangeEnd());
+      if (FunctionTypeLoc FTLoc = TL.getAs<FunctionTypeLoc>())
+        FixItLoc = PP.getLocForEndOfToken(FTLoc.getLocalRangeEnd());
     }
 
     if (FixItLoc.isInvalid())
@@ -1009,8 +1005,8 @@ CanThrowResult Sema::canThrow(const Expr *E) {
   case Expr::ConditionalOperatorClass:
   case Expr::CompoundLiteralExprClass:
   case Expr::CXXConstCastExprClass:
-  case Expr::CXXDefaultArgExprClass:
   case Expr::CXXReinterpretCastExprClass:
+  case Expr::CXXStdInitializerListExprClass:
   case Expr::DesignatedInitExprClass:
   case Expr::ExprWithCleanupsClass:
   case Expr::ExtVectorElementExprClass:
@@ -1041,6 +1037,12 @@ CanThrowResult Sema::canThrow(const Expr *E) {
     // FIXME: We should handle StmtExpr, but that opens a MASSIVE can of worms.
   case Expr::StmtExprClass:
     return CT_Can;
+
+  case Expr::CXXDefaultArgExprClass:
+    return canThrow(cast<CXXDefaultArgExpr>(E)->getExpr());
+
+  case Expr::CXXDefaultInitExprClass:
+    return canThrow(cast<CXXDefaultInitExpr>(E)->getExpr());
 
   case Expr::ChooseExprClass:
     if (E->isTypeDependent() || E->isValueDependent())
@@ -1108,6 +1110,9 @@ CanThrowResult Sema::canThrow(const Expr *E) {
   case Expr::UnaryTypeTraitExprClass:
     // These expressions can never throw.
     return CT_Cannot;
+
+  case Expr::MSPropertyRefExprClass:
+    llvm_unreachable("Invalid class for expression");
 
 #define STMT(CLASS, PARENT) case Expr::CLASS##Class:
 #define STMT_RANGE(Base, First, Last)

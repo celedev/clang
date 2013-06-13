@@ -15,6 +15,7 @@
 #define CLANG_CODEGEN_CODEGENFUNCTION_H
 
 #include "CGBuilder.h"
+#include "CGCleanup.h"
 #include "CGDebugInfo.h"
 #include "CGValue.h"
 #include "CodeGenModule.h"
@@ -23,6 +24,7 @@
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/ABI.h"
+#include "clang/Basic/CapturedStmt.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -78,455 +80,15 @@ namespace CodeGen {
   class BlockFlags;
   class BlockFieldFlags;
 
-/// A branch fixup.  These are required when emitting a goto to a
-/// label which hasn't been emitted yet.  The goto is optimistically
-/// emitted as a branch to the basic block for the label, and (if it
-/// occurs in a scope with non-trivial cleanups) a fixup is added to
-/// the innermost cleanup.  When a (normal) cleanup is popped, any
-/// unresolved fixups in that scope are threaded through the cleanup.
-struct BranchFixup {
-  /// The block containing the terminator which needs to be modified
-  /// into a switch if this fixup is resolved into the current scope.
-  /// If null, LatestBranch points directly to the destination.
-  llvm::BasicBlock *OptimisticBranchBlock;
-
-  /// The ultimate destination of the branch.
-  ///
-  /// This can be set to null to indicate that this fixup was
-  /// successfully resolved.
-  llvm::BasicBlock *Destination;
-
-  /// The destination index value.
-  unsigned DestinationIndex;
-
-  /// The initial branch of the fixup.
-  llvm::BranchInst *InitialBranch;
-};
-
-template <class T> struct InvariantValue {
-  typedef T type;
-  typedef T saved_type;
-  static bool needsSaving(type value) { return false; }
-  static saved_type save(CodeGenFunction &CGF, type value) { return value; }
-  static type restore(CodeGenFunction &CGF, saved_type value) { return value; }
-};
-
-/// A metaprogramming class for ensuring that a value will dominate an
-/// arbitrary position in a function.
-template <class T> struct DominatingValue : InvariantValue<T> {};
-
-template <class T, bool mightBeInstruction =
-            llvm::is_base_of<llvm::Value, T>::value &&
-            !llvm::is_base_of<llvm::Constant, T>::value &&
-            !llvm::is_base_of<llvm::BasicBlock, T>::value>
-struct DominatingPointer;
-template <class T> struct DominatingPointer<T,false> : InvariantValue<T*> {};
-// template <class T> struct DominatingPointer<T,true> at end of file
-
-template <class T> struct DominatingValue<T*> : DominatingPointer<T> {};
-
-enum CleanupKind {
-  EHCleanup = 0x1,
-  NormalCleanup = 0x2,
-  NormalAndEHCleanup = EHCleanup | NormalCleanup,
-
-  InactiveCleanup = 0x4,
-  InactiveEHCleanup = EHCleanup | InactiveCleanup,
-  InactiveNormalCleanup = NormalCleanup | InactiveCleanup,
-  InactiveNormalAndEHCleanup = NormalAndEHCleanup | InactiveCleanup
-};
-
-/// A stack of scopes which respond to exceptions, including cleanups
-/// and catch blocks.
-class EHScopeStack {
-public:
-  /// A saved depth on the scope stack.  This is necessary because
-  /// pushing scopes onto the stack invalidates iterators.
-  class stable_iterator {
-    friend class EHScopeStack;
-
-    /// Offset from StartOfData to EndOfBuffer.
-    ptrdiff_t Size;
-
-    stable_iterator(ptrdiff_t Size) : Size(Size) {}
-
-  public:
-    static stable_iterator invalid() { return stable_iterator(-1); }
-    stable_iterator() : Size(-1) {}
-
-    bool isValid() const { return Size >= 0; }
-
-    /// Returns true if this scope encloses I.
-    /// Returns false if I is invalid.
-    /// This scope must be valid.
-    bool encloses(stable_iterator I) const { return Size <= I.Size; }
-
-    /// Returns true if this scope strictly encloses I: that is,
-    /// if it encloses I and is not I.
-    /// Returns false is I is invalid.
-    /// This scope must be valid.
-    bool strictlyEncloses(stable_iterator I) const { return Size < I.Size; }
-
-    friend bool operator==(stable_iterator A, stable_iterator B) {
-      return A.Size == B.Size;
-    }
-    friend bool operator!=(stable_iterator A, stable_iterator B) {
-      return A.Size != B.Size;
-    }
-  };
-
-  /// Information for lazily generating a cleanup.  Subclasses must be
-  /// POD-like: cleanups will not be destructed, and they will be
-  /// allocated on the cleanup stack and freely copied and moved
-  /// around.
-  ///
-  /// Cleanup implementations should generally be declared in an
-  /// anonymous namespace.
-  class Cleanup {
-    // Anchor the construction vtable.
-    virtual void anchor();
-  public:
-    /// Generation flags.
-    class Flags {
-      enum {
-        F_IsForEH             = 0x1,
-        F_IsNormalCleanupKind = 0x2,
-        F_IsEHCleanupKind     = 0x4
-      };
-      unsigned flags;
-
-    public:
-      Flags() : flags(0) {}
-
-      /// isForEH - true if the current emission is for an EH cleanup.
-      bool isForEHCleanup() const { return flags & F_IsForEH; }
-      bool isForNormalCleanup() const { return !isForEHCleanup(); }
-      void setIsForEHCleanup() { flags |= F_IsForEH; }
-
-      bool isNormalCleanupKind() const { return flags & F_IsNormalCleanupKind; }
-      void setIsNormalCleanupKind() { flags |= F_IsNormalCleanupKind; }
-
-      /// isEHCleanupKind - true if the cleanup was pushed as an EH
-      /// cleanup.
-      bool isEHCleanupKind() const { return flags & F_IsEHCleanupKind; }
-      void setIsEHCleanupKind() { flags |= F_IsEHCleanupKind; }
-    };
-
-    // Provide a virtual destructor to suppress a very common warning
-    // that unfortunately cannot be suppressed without this.  Cleanups
-    // should not rely on this destructor ever being called.
-    virtual ~Cleanup() {}
-
-    /// Emit the cleanup.  For normal cleanups, this is run in the
-    /// same EH context as when the cleanup was pushed, i.e. the
-    /// immediately-enclosing context of the cleanup scope.  For
-    /// EH cleanups, this is run in a terminate context.
-    ///
-    // \param flags cleanup kind.
-    virtual void Emit(CodeGenFunction &CGF, Flags flags) = 0;
-  };
-
-  /// ConditionalCleanupN stores the saved form of its N parameters,
-  /// then restores them and performs the cleanup.
-  template <class T, class A0>
-  class ConditionalCleanup1 : public Cleanup {
-    typedef typename DominatingValue<A0>::saved_type A0_saved;
-    A0_saved a0_saved;
-
-    void Emit(CodeGenFunction &CGF, Flags flags) {
-      A0 a0 = DominatingValue<A0>::restore(CGF, a0_saved);
-      T(a0).Emit(CGF, flags);
-    }
-
-  public:
-    ConditionalCleanup1(A0_saved a0)
-      : a0_saved(a0) {}
-  };
-
-  template <class T, class A0, class A1>
-  class ConditionalCleanup2 : public Cleanup {
-    typedef typename DominatingValue<A0>::saved_type A0_saved;
-    typedef typename DominatingValue<A1>::saved_type A1_saved;
-    A0_saved a0_saved;
-    A1_saved a1_saved;
-
-    void Emit(CodeGenFunction &CGF, Flags flags) {
-      A0 a0 = DominatingValue<A0>::restore(CGF, a0_saved);
-      A1 a1 = DominatingValue<A1>::restore(CGF, a1_saved);
-      T(a0, a1).Emit(CGF, flags);
-    }
-
-  public:
-    ConditionalCleanup2(A0_saved a0, A1_saved a1)
-      : a0_saved(a0), a1_saved(a1) {}
-  };
-
-  template <class T, class A0, class A1, class A2>
-  class ConditionalCleanup3 : public Cleanup {
-    typedef typename DominatingValue<A0>::saved_type A0_saved;
-    typedef typename DominatingValue<A1>::saved_type A1_saved;
-    typedef typename DominatingValue<A2>::saved_type A2_saved;
-    A0_saved a0_saved;
-    A1_saved a1_saved;
-    A2_saved a2_saved;
-    
-    void Emit(CodeGenFunction &CGF, Flags flags) {
-      A0 a0 = DominatingValue<A0>::restore(CGF, a0_saved);
-      A1 a1 = DominatingValue<A1>::restore(CGF, a1_saved);
-      A2 a2 = DominatingValue<A2>::restore(CGF, a2_saved);
-      T(a0, a1, a2).Emit(CGF, flags);
-    }
-    
-  public:
-    ConditionalCleanup3(A0_saved a0, A1_saved a1, A2_saved a2)
-      : a0_saved(a0), a1_saved(a1), a2_saved(a2) {}
-  };
-
-  template <class T, class A0, class A1, class A2, class A3>
-  class ConditionalCleanup4 : public Cleanup {
-    typedef typename DominatingValue<A0>::saved_type A0_saved;
-    typedef typename DominatingValue<A1>::saved_type A1_saved;
-    typedef typename DominatingValue<A2>::saved_type A2_saved;
-    typedef typename DominatingValue<A3>::saved_type A3_saved;
-    A0_saved a0_saved;
-    A1_saved a1_saved;
-    A2_saved a2_saved;
-    A3_saved a3_saved;
-    
-    void Emit(CodeGenFunction &CGF, Flags flags) {
-      A0 a0 = DominatingValue<A0>::restore(CGF, a0_saved);
-      A1 a1 = DominatingValue<A1>::restore(CGF, a1_saved);
-      A2 a2 = DominatingValue<A2>::restore(CGF, a2_saved);
-      A3 a3 = DominatingValue<A3>::restore(CGF, a3_saved);
-      T(a0, a1, a2, a3).Emit(CGF, flags);
-    }
-    
-  public:
-    ConditionalCleanup4(A0_saved a0, A1_saved a1, A2_saved a2, A3_saved a3)
-      : a0_saved(a0), a1_saved(a1), a2_saved(a2), a3_saved(a3) {}
-  };
-
-private:
-  // The implementation for this class is in CGException.h and
-  // CGException.cpp; the definition is here because it's used as a
-  // member of CodeGenFunction.
-
-  /// The start of the scope-stack buffer, i.e. the allocated pointer
-  /// for the buffer.  All of these pointers are either simultaneously
-  /// null or simultaneously valid.
-  char *StartOfBuffer;
-
-  /// The end of the buffer.
-  char *EndOfBuffer;
-
-  /// The first valid entry in the buffer.
-  char *StartOfData;
-
-  /// The innermost normal cleanup on the stack.
-  stable_iterator InnermostNormalCleanup;
-
-  /// The innermost EH scope on the stack.
-  stable_iterator InnermostEHScope;
-
-  /// The current set of branch fixups.  A branch fixup is a jump to
-  /// an as-yet unemitted label, i.e. a label for which we don't yet
-  /// know the EH stack depth.  Whenever we pop a cleanup, we have
-  /// to thread all the current branch fixups through it.
-  ///
-  /// Fixups are recorded as the Use of the respective branch or
-  /// switch statement.  The use points to the final destination.
-  /// When popping out of a cleanup, these uses are threaded through
-  /// the cleanup and adjusted to point to the new cleanup.
-  ///
-  /// Note that branches are allowed to jump into protected scopes
-  /// in certain situations;  e.g. the following code is legal:
-  ///     struct A { ~A(); }; // trivial ctor, non-trivial dtor
-  ///     goto foo;
-  ///     A a;
-  ///    foo:
-  ///     bar();
-  SmallVector<BranchFixup, 8> BranchFixups;
-
-  char *allocate(size_t Size);
-
-  void *pushCleanup(CleanupKind K, size_t DataSize);
-
-public:
-  EHScopeStack() : StartOfBuffer(0), EndOfBuffer(0), StartOfData(0),
-                   InnermostNormalCleanup(stable_end()),
-                   InnermostEHScope(stable_end()) {}
-  ~EHScopeStack() { delete[] StartOfBuffer; }
-
-  // Variadic templates would make this not terrible.
-
-  /// Push a lazily-created cleanup on the stack.
-  template <class T>
-  void pushCleanup(CleanupKind Kind) {
-    void *Buffer = pushCleanup(Kind, sizeof(T));
-    Cleanup *Obj = new(Buffer) T();
-    (void) Obj;
-  }
-
-  /// Push a lazily-created cleanup on the stack.
-  template <class T, class A0>
-  void pushCleanup(CleanupKind Kind, A0 a0) {
-    void *Buffer = pushCleanup(Kind, sizeof(T));
-    Cleanup *Obj = new(Buffer) T(a0);
-    (void) Obj;
-  }
-
-  /// Push a lazily-created cleanup on the stack.
-  template <class T, class A0, class A1>
-  void pushCleanup(CleanupKind Kind, A0 a0, A1 a1) {
-    void *Buffer = pushCleanup(Kind, sizeof(T));
-    Cleanup *Obj = new(Buffer) T(a0, a1);
-    (void) Obj;
-  }
-
-  /// Push a lazily-created cleanup on the stack.
-  template <class T, class A0, class A1, class A2>
-  void pushCleanup(CleanupKind Kind, A0 a0, A1 a1, A2 a2) {
-    void *Buffer = pushCleanup(Kind, sizeof(T));
-    Cleanup *Obj = new(Buffer) T(a0, a1, a2);
-    (void) Obj;
-  }
-
-  /// Push a lazily-created cleanup on the stack.
-  template <class T, class A0, class A1, class A2, class A3>
-  void pushCleanup(CleanupKind Kind, A0 a0, A1 a1, A2 a2, A3 a3) {
-    void *Buffer = pushCleanup(Kind, sizeof(T));
-    Cleanup *Obj = new(Buffer) T(a0, a1, a2, a3);
-    (void) Obj;
-  }
-
-  /// Push a lazily-created cleanup on the stack.
-  template <class T, class A0, class A1, class A2, class A3, class A4>
-  void pushCleanup(CleanupKind Kind, A0 a0, A1 a1, A2 a2, A3 a3, A4 a4) {
-    void *Buffer = pushCleanup(Kind, sizeof(T));
-    Cleanup *Obj = new(Buffer) T(a0, a1, a2, a3, a4);
-    (void) Obj;
-  }
-
-  // Feel free to add more variants of the following:
-
-  /// Push a cleanup with non-constant storage requirements on the
-  /// stack.  The cleanup type must provide an additional static method:
-  ///   static size_t getExtraSize(size_t);
-  /// The argument to this method will be the value N, which will also
-  /// be passed as the first argument to the constructor.
-  ///
-  /// The data stored in the extra storage must obey the same
-  /// restrictions as normal cleanup member data.
-  ///
-  /// The pointer returned from this method is valid until the cleanup
-  /// stack is modified.
-  template <class T, class A0, class A1, class A2>
-  T *pushCleanupWithExtra(CleanupKind Kind, size_t N, A0 a0, A1 a1, A2 a2) {
-    void *Buffer = pushCleanup(Kind, sizeof(T) + T::getExtraSize(N));
-    return new (Buffer) T(N, a0, a1, a2);
-  }
-
-  /// Pops a cleanup scope off the stack.  This is private to CGCleanup.cpp.
-  void popCleanup();
-
-  /// Push a set of catch handlers on the stack.  The catch is
-  /// uninitialized and will need to have the given number of handlers
-  /// set on it.
-  class EHCatchScope *pushCatch(unsigned NumHandlers);
-
-  /// Pops a catch scope off the stack.  This is private to CGException.cpp.
-  void popCatch();
-
-  /// Push an exceptions filter on the stack.
-  class EHFilterScope *pushFilter(unsigned NumFilters);
-
-  /// Pops an exceptions filter off the stack.
-  void popFilter();
-
-  /// Push a terminate handler on the stack.
-  void pushTerminate();
-
-  /// Pops a terminate handler off the stack.
-  void popTerminate();
-
-  /// Determines whether the exception-scopes stack is empty.
-  bool empty() const { return StartOfData == EndOfBuffer; }
-
-  bool requiresLandingPad() const {
-    return InnermostEHScope != stable_end();
-  }
-
-  /// Determines whether there are any normal cleanups on the stack.
-  bool hasNormalCleanups() const {
-    return InnermostNormalCleanup != stable_end();
-  }
-
-  /// Returns the innermost normal cleanup on the stack, or
-  /// stable_end() if there are no normal cleanups.
-  stable_iterator getInnermostNormalCleanup() const {
-    return InnermostNormalCleanup;
-  }
-  stable_iterator getInnermostActiveNormalCleanup() const;
-
-  stable_iterator getInnermostEHScope() const {
-    return InnermostEHScope;
-  }
-
-  stable_iterator getInnermostActiveEHScope() const;
-
-  /// An unstable reference to a scope-stack depth.  Invalidated by
-  /// pushes but not pops.
-  class iterator;
-
-  /// Returns an iterator pointing to the innermost EH scope.
-  iterator begin() const;
-
-  /// Returns an iterator pointing to the outermost EH scope.
-  iterator end() const;
-
-  /// Create a stable reference to the top of the EH stack.  The
-  /// returned reference is valid until that scope is popped off the
-  /// stack.
-  stable_iterator stable_begin() const {
-    return stable_iterator(EndOfBuffer - StartOfData);
-  }
-
-  /// Create a stable reference to the bottom of the EH stack.
-  static stable_iterator stable_end() {
-    return stable_iterator(0);
-  }
-
-  /// Translates an iterator into a stable_iterator.
-  stable_iterator stabilize(iterator it) const;
-
-  /// Turn a stable reference to a scope depth into a unstable pointer
-  /// to the EH stack.
-  iterator find(stable_iterator save) const;
-
-  /// Removes the cleanup pointed to by the given stable_iterator.
-  void removeCleanup(stable_iterator save);
-
-  /// Add a branch fixup to the current cleanup scope.
-  BranchFixup &addBranchFixup() {
-    assert(hasNormalCleanups() && "adding fixup in scope without cleanups");
-    BranchFixups.push_back(BranchFixup());
-    return BranchFixups.back();
-  }
-
-  unsigned getNumBranchFixups() const { return BranchFixups.size(); }
-  BranchFixup &getBranchFixup(unsigned I) {
-    assert(I < getNumBranchFixups());
-    return BranchFixups[I];
-  }
-
-  /// Pops lazily-removed fixups from the end of the list.  This
-  /// should only be called by procedures which have just popped a
-  /// cleanup or resolved one or more fixups.
-  void popNullFixups();
-
-  /// Clears the branch-fixups list.  This should only be called by
-  /// ResolveAllBranchFixups.
-  void clearFixups() { BranchFixups.clear(); }
+/// The kind of evaluation to perform on values of a particular
+/// type.  Basically, is the code in CGExprScalar, CGExprComplex, or
+/// CGExprAgg?
+///
+/// TODO: should vectors maybe be split out into their own thing?
+enum TypeEvaluationKind {
+  TEK_Scalar,
+  TEK_Complex,
+  TEK_Aggregate
 };
 
 /// CodeGenFunction - This class organizes the per-function state that is used
@@ -551,6 +113,11 @@ public:
     EHScopeStack::stable_iterator getScopeDepth() const { return ScopeDepth; }
     unsigned getDestIndex() const { return Index; }
 
+    // This should be used cautiously.
+    void setScopeDepth(EHScopeStack::stable_iterator depth) {
+      ScopeDepth = depth;
+    }
+
   private:
     llvm::BasicBlock *Block;
     EHScopeStack::stable_iterator ScopeDepth;
@@ -563,8 +130,8 @@ public:
   typedef std::pair<llvm::Value *, llvm::Value *> ComplexPairTy;
   CGBuilderTy Builder;
 
-  /// CurFuncDecl - Holds the Decl for the current function or ObjC method.
-  /// This excludes BlockDecls.
+  /// CurFuncDecl - Holds the Decl for the current outermost
+  /// non-closure context.
   const Decl *CurFuncDecl;
   /// CurCodeDecl - This is the inner-most code context, which includes blocks.
   const Decl *CurCodeDecl;
@@ -589,6 +156,65 @@ public:
   /// AllocaInsertPoint - This is an instruction in the entry block before which
   /// we prefer to insert allocas.
   llvm::AssertingVH<llvm::Instruction> AllocaInsertPt;
+
+  /// \brief API for captured statement code generation.
+  class CGCapturedStmtInfo {
+  public:
+    explicit CGCapturedStmtInfo(const CapturedStmt &S,
+                                CapturedRegionKind K = CR_Default)
+      : Kind(K), ThisValue(0), CXXThisFieldDecl(0) {
+
+      RecordDecl::field_iterator Field =
+        S.getCapturedRecordDecl()->field_begin();
+      for (CapturedStmt::const_capture_iterator I = S.capture_begin(),
+                                                E = S.capture_end();
+           I != E; ++I, ++Field) {
+        if (I->capturesThis())
+          CXXThisFieldDecl = *Field;
+        else
+          CaptureFields[I->getCapturedVar()] = *Field;
+      }
+    }
+
+    virtual ~CGCapturedStmtInfo();
+
+    CapturedRegionKind getKind() const { return Kind; }
+
+    void setContextValue(llvm::Value *V) { ThisValue = V; }
+    // \brief Retrieve the value of the context parameter.
+    llvm::Value *getContextValue() const { return ThisValue; }
+
+    /// \brief Lookup the captured field decl for a variable.
+    const FieldDecl *lookup(const VarDecl *VD) const {
+      return CaptureFields.lookup(VD);
+    }
+
+    bool isCXXThisExprCaptured() const { return CXXThisFieldDecl != 0; }
+    FieldDecl *getThisFieldDecl() const { return CXXThisFieldDecl; }
+
+    /// \brief Emit the captured statement body.
+    virtual void EmitBody(CodeGenFunction &CGF, Stmt *S) {
+      CGF.EmitStmt(S);
+    }
+
+    /// \brief Get the name of the capture helper.
+    virtual StringRef getHelperName() const { return "__captured_stmt"; }
+
+  private:
+    /// \brief The kind of captured statement being generated.
+    CapturedRegionKind Kind;
+
+    /// \brief Keep the map between VarDecl and FieldDecl.
+    llvm::SmallDenseMap<const VarDecl *, FieldDecl *> CaptureFields;
+
+    /// \brief The base address of the captured record, passed in as the first
+    /// argument of the parallel region function.
+    llvm::Value *ThisValue;
+
+    /// \brief Captured 'this' type.
+    FieldDecl *CXXThisFieldDecl;
+  };
+  CGCapturedStmtInfo *CapturedStmtInfo;
 
   /// BoundsChecking - Emit run-time bounds checks. Higher values mean
   /// potentially higher performance penalties.
@@ -615,6 +241,18 @@ public:
   llvm::DenseMap<const VarDecl *, llvm::Value *> NRVOFlags;
 
   EHScopeStack EHStack;
+  llvm::SmallVector<char, 256> LifetimeExtendedCleanupStack;
+
+  /// Header for data within LifetimeExtendedCleanupStack.
+  struct LifetimeExtendedCleanupHeader {
+    /// The size of the following cleanup object.
+    size_t Size : 29;
+    /// The kind of cleanup to push: a value from the CleanupKind enumeration.
+    unsigned Kind : 3;
+
+    size_t getSize() const { return Size; }
+    CleanupKind getKind() const { return static_cast<CleanupKind>(Kind); }
+  };
 
   /// i32s containing the indexes of the cleanup destinations.
   llvm::AllocaInst *NormalCleanupDest;
@@ -750,6 +388,23 @@ public:
     initFullExprCleanup();
   }
 
+  /// \brief Queue a cleanup to be pushed after finishing the current
+  /// full-expression.
+  template <class T, class A0, class A1, class A2, class A3>
+  void pushCleanupAfterFullExpr(CleanupKind Kind, A0 a0, A1 a1, A2 a2, A3 a3) {
+    assert(!isInConditionalBranch() && "can't defer conditional cleanup");
+
+    LifetimeExtendedCleanupHeader Header = { sizeof(T), Kind };
+
+    size_t OldSize = LifetimeExtendedCleanupStack.size();
+    LifetimeExtendedCleanupStack.resize(
+        LifetimeExtendedCleanupStack.size() + sizeof(Header) + Header.Size);
+
+    char *Buffer = &LifetimeExtendedCleanupStack[OldSize];
+    new (Buffer) LifetimeExtendedCleanupHeader(Header);
+    new (Buffer + sizeof(Header)) T(a0, a1, a2, a3);
+  }
+
   /// Set up the last cleaup that was pushed as a conditional
   /// full-expression cleanup.
   void initFullExprCleanup();
@@ -795,8 +450,11 @@ public:
   /// will be executed once the scope is exited.
   class RunCleanupsScope {
     EHScopeStack::stable_iterator CleanupStackDepth;
+    size_t LifetimeExtendedCleanupStackSize;
     bool OldDidCallStackSave;
+  protected:
     bool PerformCleanup;
+  private:
 
     RunCleanupsScope(const RunCleanupsScope &) LLVM_DELETED_FUNCTION;
     void operator=(const RunCleanupsScope &) LLVM_DELETED_FUNCTION;
@@ -810,6 +468,8 @@ public:
       : PerformCleanup(true), CGF(CGF)
     {
       CleanupStackDepth = CGF.EHStack.stable_begin();
+      LifetimeExtendedCleanupStackSize =
+          CGF.LifetimeExtendedCleanupStack.size();
       OldDidCallStackSave = CGF.DidCallStackSave;
       CGF.DidCallStackSave = false;
     }
@@ -819,7 +479,8 @@ public:
     ~RunCleanupsScope() {
       if (PerformCleanup) {
         CGF.DidCallStackSave = OldDidCallStackSave;
-        CGF.PopCleanupBlocks(CleanupStackDepth);
+        CGF.PopCleanupBlocks(CleanupStackDepth,
+                             LifetimeExtendedCleanupStackSize);
       }
     }
 
@@ -833,14 +494,16 @@ public:
     void ForceCleanup() {
       assert(PerformCleanup && "Already forced cleanup");
       CGF.DidCallStackSave = OldDidCallStackSave;
-      CGF.PopCleanupBlocks(CleanupStackDepth);
+      CGF.PopCleanupBlocks(CleanupStackDepth,
+                           LifetimeExtendedCleanupStackSize);
       PerformCleanup = false;
     }
   };
 
   class LexicalScope: protected RunCleanupsScope {
     SourceRange Range;
-    bool PopDebugStack;
+    SmallVector<const LabelDecl*, 4> Labels;
+    LexicalScope *ParentScope;
 
     LexicalScope(const LexicalScope &) LLVM_DELETED_FUNCTION;
     void operator=(const LexicalScope &) LLVM_DELETED_FUNCTION;
@@ -848,35 +511,51 @@ public:
   public:
     /// \brief Enter a new cleanup scope.
     explicit LexicalScope(CodeGenFunction &CGF, SourceRange Range)
-      : RunCleanupsScope(CGF), Range(Range), PopDebugStack(true) {
+      : RunCleanupsScope(CGF), Range(Range), ParentScope(CGF.CurLexicalScope) {
+      CGF.CurLexicalScope = this;
       if (CGDebugInfo *DI = CGF.getDebugInfo())
         DI->EmitLexicalBlockStart(CGF.Builder, Range.getBegin());
+    }
+
+    void addLabel(const LabelDecl *label) {
+      assert(PerformCleanup && "adding label to dead scope?");
+      Labels.push_back(label);
     }
 
     /// \brief Exit this cleanup scope, emitting any accumulated
     /// cleanups.
     ~LexicalScope() {
-      if (PopDebugStack) {
-        CGDebugInfo *DI = CGF.getDebugInfo();
-        if (DI) DI->EmitLexicalBlockEnd(CGF.Builder, Range.getEnd());
-      }
+      if (CGDebugInfo *DI = CGF.getDebugInfo())
+        DI->EmitLexicalBlockEnd(CGF.Builder, Range.getEnd());
+
+      // If we should perform a cleanup, force them now.  Note that
+      // this ends the cleanup scope before rescoping any labels.
+      if (PerformCleanup) ForceCleanup();
     }
 
     /// \brief Force the emission of cleanups now, instead of waiting
     /// until this object is destroyed.
     void ForceCleanup() {
+      CGF.CurLexicalScope = ParentScope;
       RunCleanupsScope::ForceCleanup();
-      if (CGDebugInfo *DI = CGF.getDebugInfo()) {
-        DI->EmitLexicalBlockEnd(CGF.Builder, Range.getEnd());
-        PopDebugStack = false;
-      }
+
+      if (!Labels.empty())
+        rescopeLabels();
     }
+
+    void rescopeLabels();
   };
 
 
-  /// PopCleanupBlocks - Takes the old cleanup stack size and emits
-  /// the cleanup blocks that have been added.
+  /// \brief Takes the old cleanup stack size and emits the cleanup blocks
+  /// that have been added.
   void PopCleanupBlocks(EHScopeStack::stable_iterator OldCleanupStackSize);
+
+  /// \brief Takes the old cleanup stack size and emits the cleanup blocks
+  /// that have been added, then adds all lifetime-extended cleanups from
+  /// the given position to the stack.
+  void PopCleanupBlocks(EHScopeStack::stable_iterator OldCleanupStackSize,
+                        size_t OldLifetimeExtendedStackSize);
 
   void ResolveBranchFixups(llvm::BasicBlock *Target);
 
@@ -1119,6 +798,10 @@ private:
   CGDebugInfo *DebugInfo;
   bool DisableDebugInfo;
 
+  /// If the current function returns 'this', use the field to keep track of
+  /// the callee that returns 'this'.
+  llvm::Value *CalleeWithThisReturn;
+
   /// DidCallStackSave - Whether llvm.stacksave has been called. Used to avoid
   /// calling llvm.stacksave for multiple VLAs in the same scope.
   bool DidCallStackSave;
@@ -1173,23 +856,78 @@ private:
   /// lazily by getUnreachableBlock().
   llvm::BasicBlock *UnreachableBlock;
 
+  /// Counts of the number return expressions in the function.
+  unsigned NumReturnExprs;
+
+  /// Count the number of simple (constant) return expressions in the function.
+  unsigned NumSimpleReturnExprs;
+
+  /// The last regular (non-return) debug location (breakpoint) in the function.
+  SourceLocation LastStopPoint;
+
+public:
+  /// A scope within which we are constructing the fields of an object which
+  /// might use a CXXDefaultInitExpr. This stashes away a 'this' value to use
+  /// if we need to evaluate a CXXDefaultInitExpr within the evaluation.
+  class FieldConstructionScope {
+  public:
+    FieldConstructionScope(CodeGenFunction &CGF, llvm::Value *This)
+        : CGF(CGF), OldCXXDefaultInitExprThis(CGF.CXXDefaultInitExprThis) {
+      CGF.CXXDefaultInitExprThis = This;
+    }
+    ~FieldConstructionScope() {
+      CGF.CXXDefaultInitExprThis = OldCXXDefaultInitExprThis;
+    }
+
+  private:
+    CodeGenFunction &CGF;
+    llvm::Value *OldCXXDefaultInitExprThis;
+  };
+
+  /// The scope of a CXXDefaultInitExpr. Within this scope, the value of 'this'
+  /// is overridden to be the object under construction.
+  class CXXDefaultInitExprScope {
+  public:
+    CXXDefaultInitExprScope(CodeGenFunction &CGF)
+        : CGF(CGF), OldCXXThisValue(CGF.CXXThisValue) {
+      CGF.CXXThisValue = CGF.CXXDefaultInitExprThis;
+    }
+    ~CXXDefaultInitExprScope() {
+      CGF.CXXThisValue = OldCXXThisValue;
+    }
+
+  public:
+    CodeGenFunction &CGF;
+    llvm::Value *OldCXXThisValue;
+  };
+
+private:
   /// CXXThisDecl - When generating code for a C++ member function,
   /// this will hold the implicit 'this' declaration.
   ImplicitParamDecl *CXXABIThisDecl;
   llvm::Value *CXXABIThisValue;
   llvm::Value *CXXThisValue;
 
-  /// CXXVTTDecl - When generating code for a base object constructor or
-  /// base object destructor with virtual bases, this will hold the implicit
-  /// VTT parameter.
-  ImplicitParamDecl *CXXVTTDecl;
-  llvm::Value *CXXVTTValue;
+  /// The value of 'this' to use when evaluating CXXDefaultInitExprs within
+  /// this expression.
+  llvm::Value *CXXDefaultInitExprThis;
+
+  /// CXXStructorImplicitParamDecl - When generating code for a constructor or
+  /// destructor, this will hold the implicit argument (e.g. VTT).
+  ImplicitParamDecl *CXXStructorImplicitParamDecl;
+  llvm::Value *CXXStructorImplicitParamValue;
 
   /// OutermostConditional - Points to the outermost active
   /// conditional control.  This is used so that we know if a
   /// temporary should be destroyed conditionally.
   ConditionalEvaluation *OutermostConditional;
 
+  /// The current lexical scope.
+  LexicalScope *CurLexicalScope;
+
+  /// The current source location that should be used for exception
+  /// handling code.
+  SourceLocation CurEHLocation;
 
   /// ByrefValueInfoMap - For each __block variable, contains a pair of the LLVM
   /// type as well as the field number that contains the actual data.
@@ -1203,6 +941,9 @@ private:
   /// Add a kernel metadata node to the named metadata node 'opencl.kernels'.
   /// In the kernel metadata node, reference the kernel function and metadata 
   /// nodes for its optional attribute qualifiers (OpenCL 1.1 6.7.2):
+  /// - A node for the vec_type_hint(<type>) qualifier contains string
+  ///   "vec_type_hint", an undefined value of the <type> data type,
+  ///   and a Boolean that is true if the <type> is integer and signed.
   /// - A node for the work_group_size_hint(X,Y,Z) qualifier contains string 
   ///   "work_group_size_hint", and three 32-bit integers X, Y and Z.
   /// - A node for the reqd_work_group_size(X,Y,Z) qualifier contains string 
@@ -1263,6 +1004,7 @@ public:
     return getInvokeDestImpl();
   }
 
+  const TargetInfo &getTarget() const { return Target; }
   llvm::LLVMContext &getLLVMContext() { return CGM.getLLVMContext(); }
 
   //===--------------------------------------------------------------------===//
@@ -1282,8 +1024,13 @@ public:
 
   void pushDestroy(QualType::DestructionKind dtorKind,
                    llvm::Value *addr, QualType type);
+  void pushEHDestroy(QualType::DestructionKind dtorKind,
+                     llvm::Value *addr, QualType type);
   void pushDestroy(CleanupKind kind, llvm::Value *addr, QualType type,
                    Destroyer *destroyer, bool useEHCleanupForArray);
+  void pushLifetimeExtendedDestroy(CleanupKind kind, llvm::Value *addr,
+                                   QualType type, Destroyer *destroyer,
+                                   bool useEHCleanupForArray);
   void emitDestroy(llvm::Value *addr, QualType type, Destroyer *destroyer,
                    bool useEHCleanupForArray);
   llvm::Function *generateDestroyHelper(llvm::Constant *addr,
@@ -1361,7 +1108,6 @@ public:
 
   llvm::Function *GenerateBlockFunction(GlobalDecl GD,
                                         const CGBlockInfo &Info,
-                                        const Decl *OuterFuncDecl,
                                         const DeclMapTy &ldm,
                                         bool IsLambdaConversionToBlock);
 
@@ -1392,7 +1138,8 @@ public:
 
   void GenerateCode(GlobalDecl GD, llvm::Function *Fn,
                     const CGFunctionInfo &FnInfo);
-  void StartFunction(GlobalDecl GD, QualType RetTy,
+  void StartFunction(GlobalDecl GD,
+                     QualType RetTy,
                      llvm::Function *Fn,
                      const CGFunctionInfo &FnInfo,
                      const FunctionArgList &Args,
@@ -1400,6 +1147,7 @@ public:
 
   void EmitConstructorBody(FunctionArgList &Args);
   void EmitDestructorBody(FunctionArgList &Args);
+  void emitImplicitAssignmentOperatorBody(FunctionArgList &Args);
   void EmitFunctionBody(FunctionArgList &Args);
 
   void EmitForwardingCallToLambda(const CXXRecordDecl *Lambda,
@@ -1481,7 +1229,7 @@ public:
 
   /// EmitFunctionEpilog - Emit the target specific LLVM code to return the
   /// given temporary.
-  void EmitFunctionEpilog(const CGFunctionInfo &FI);
+  void EmitFunctionEpilog(const CGFunctionInfo &FI, bool EmitRetDbgLoc);
 
   /// EmitStartEHSpec - Emit the start of the exception spec.
   void EmitStartEHSpec(const Decl *D);
@@ -1512,7 +1260,15 @@ public:
 
   /// hasAggregateLLVMType - Return true if the specified AST type will map into
   /// an aggregate LLVM type or is void.
-  static bool hasAggregateLLVMType(QualType T);
+  static TypeEvaluationKind getEvaluationKind(QualType T);
+
+  static bool hasScalarEvaluationKind(QualType T) {
+    return getEvaluationKind(T) == TEK_Scalar;
+  }
+
+  static bool hasAggregateEvaluationKind(QualType T) {
+    return getEvaluationKind(T) == TEK_Aggregate;
+  }
 
   /// createBasicBlock - Create an LLVM basic block.
   llvm::BasicBlock *createBasicBlock(const Twine &name = "",
@@ -1665,17 +1421,27 @@ public:
   void EmitExprAsInit(const Expr *init, const ValueDecl *D,
                       LValue lvalue, bool capturedByInit);
 
-  /// EmitAggregateCopy - Emit an aggrate assignment.
+  /// hasVolatileMember - returns true if aggregate type has a volatile
+  /// member.
+  bool hasVolatileMember(QualType T) {
+    if (const RecordType *RT = T->getAs<RecordType>()) {
+      const RecordDecl *RD = cast<RecordDecl>(RT->getDecl());
+      return RD->hasVolatileMember();
+    }
+    return false;
+  }
+  /// EmitAggregateCopy - Emit an aggregate assignment.
   ///
   /// The difference to EmitAggregateCopy is that tail padding is not copied.
   /// This is required for correctness when assigning non-POD structures in C++.
   void EmitAggregateAssign(llvm::Value *DestPtr, llvm::Value *SrcPtr,
-                           QualType EltTy, bool isVolatile=false,
-                           CharUnits Alignment = CharUnits::Zero()) {
-    EmitAggregateCopy(DestPtr, SrcPtr, EltTy, isVolatile, Alignment, true);
+                           QualType EltTy) {
+    bool IsVolatile = hasVolatileMember(EltTy);
+    EmitAggregateCopy(DestPtr, SrcPtr, EltTy, IsVolatile, CharUnits::Zero(),
+                      true);
   }
 
-  /// EmitAggregateCopy - Emit an aggrate copy.
+  /// EmitAggregateCopy - Emit an aggregate copy.
   ///
   /// \param isVolatile - True iff either the source or the destination is
   /// volatile.
@@ -1765,9 +1531,19 @@ public:
 
   /// LoadCXXVTT - Load the VTT parameter to base constructors/destructors have
   /// virtual bases.
+  // FIXME: Every place that calls LoadCXXVTT is something
+  // that needs to be abstracted properly.
   llvm::Value *LoadCXXVTT() {
-    assert(CXXVTTValue && "no VTT value for this function");
-    return CXXVTTValue;
+    assert(CXXStructorImplicitParamValue && "no VTT value for this function");
+    return CXXStructorImplicitParamValue;
+  }
+
+  /// LoadCXXStructorImplicitParam - Load the implicit parameter
+  /// for a constructor/destructor.
+  llvm::Value *LoadCXXStructorImplicitParam() {
+    assert(CXXStructorImplicitParamValue &&
+           "no implicit argument value for this function");
+    return CXXStructorImplicitParamValue;
   }
 
   /// GetAddressOfBaseOfCompleteClass - Convert the given pointer to a
@@ -1792,9 +1568,12 @@ public:
                                         CastExpr::path_const_iterator PathEnd,
                                         bool NullCheckValue);
 
-  llvm::Value *GetVirtualBaseClassOffset(llvm::Value *This,
-                                         const CXXRecordDecl *ClassDecl,
-                                         const CXXRecordDecl *BaseClassDecl);
+  /// GetVTTParameter - Return the VTT parameter that should be passed to a
+  /// base constructor/destructor with virtual bases.
+  /// FIXME: VTTs are Itanium ABI-specific, so the definition should move
+  /// to ItaniumCXXABI.cpp together with all the references to VTT.
+  llvm::Value *GetVTTParameter(GlobalDecl GD, bool ForVirtualBase,
+                               bool Delegating);
 
   void EmitDelegateCXXConstructorCall(const CXXConstructorDecl *Ctor,
                                       CXXCtorType CtorType,
@@ -1806,7 +1585,8 @@ public:
   void EmitDelegatingCXXConstructorCall(const CXXConstructorDecl *Ctor,
                                         const FunctionArgList &Args);
   void EmitCXXConstructorCall(const CXXConstructorDecl *D, CXXCtorType Type,
-                              bool ForVirtualBase, llvm::Value *This,
+                              bool ForVirtualBase, bool Delegating,
+                              llvm::Value *This,
                               CallExpr::const_arg_iterator ArgBeg,
                               CallExpr::const_arg_iterator ArgEnd);
   
@@ -1832,7 +1612,8 @@ public:
   static Destroyer destroyCXXObject;
 
   void EmitCXXDestructorCall(const CXXDestructorDecl *D, CXXDtorType Type,
-                             bool ForVirtualBase, llvm::Value *This);
+                             bool ForVirtualBase, bool Delegating,
+                             llvm::Value *This);
 
   void EmitNewArrayInitializer(const CXXNewExpr *E, QualType elementType,
                                llvm::Value *NewPtr, llvm::Value *NumElements);
@@ -1849,10 +1630,6 @@ public:
   llvm::Value* EmitCXXTypeidExpr(const CXXTypeidExpr *E);
   llvm::Value *EmitDynamicCast(llvm::Value *V, const CXXDynamicCastExpr *DCE);
   llvm::Value* EmitCXXUuidofExpr(const CXXUuidofExpr *E);
-
-  void MaybeEmitStdInitializerListCleanup(llvm::Value *loc, const Expr *init);
-  void EmitStdInitializerListCleanup(llvm::Value *loc,
-                                     const InitListExpr *init);
 
   /// \brief Situations in which we might emit a check for the suitability of a
   ///        pointer or glvalue.
@@ -1872,13 +1649,25 @@ public:
     /// Must be an object within its lifetime.
     TCK_MemberCall,
     /// Checking the 'this' pointer for a constructor call.
-    TCK_ConstructorCall
+    TCK_ConstructorCall,
+    /// Checking the operand of a static_cast to a derived pointer type. Must be
+    /// null or an object within its lifetime.
+    TCK_DowncastPointer,
+    /// Checking the operand of a static_cast to a derived reference type. Must
+    /// be an object within its lifetime.
+    TCK_DowncastReference
   };
 
   /// \brief Emit a check that \p V is the address of storage of the
   /// appropriate size and alignment for an object of type \p Type.
   void EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc, llvm::Value *V,
                      QualType Type, CharUnits Alignment = CharUnits::Zero());
+
+  /// \brief Emit a check that \p Base points into an array object, which
+  /// we can access at index \p Index. \p Accessed should be \c false if we
+  /// this expression is used as an lvalue, for instance in "&Arr[Idx]".
+  void EmitBoundsCheck(const Expr *E, const Expr *Base, llvm::Value *Index,
+                       QualType IndexType, bool Accessed);
 
   llvm::Value *EmitScalarPrePostIncDec(const UnaryOperator *E, LValue LV,
                                        bool isInc, bool isPre);
@@ -1931,17 +1720,33 @@ public:
     /// initializer.
     bool IsConstantAggregate;
 
+    /// Non-null if we should use lifetime annotations.
+    llvm::Value *SizeForLifetimeMarkers;
+
     struct Invalid {};
     AutoVarEmission(Invalid) : Variable(0) {}
 
     AutoVarEmission(const VarDecl &variable)
       : Variable(&variable), Address(0), NRVOFlag(0),
-        IsByRef(false), IsConstantAggregate(false) {}
+        IsByRef(false), IsConstantAggregate(false),
+        SizeForLifetimeMarkers(0) {}
 
     bool wasEmittedAsGlobal() const { return Address == 0; }
 
   public:
     static AutoVarEmission invalid() { return AutoVarEmission(Invalid()); }
+
+    bool useLifetimeMarkers() const { return SizeForLifetimeMarkers != 0; }
+    llvm::Value *getSizeForLifetimeMarkers() const {
+      assert(useLifetimeMarkers());
+      return SizeForLifetimeMarkers;
+    }
+
+    /// Returns the raw, allocated address, which is not necessarily
+    /// the address of the object itself.
+    llvm::Value *getAllocatedAddress() const {
+      return Address;
+    }
 
     /// Returns the address of the object within this declaration.
     /// Note that this does not chase the forwarding pointer for
@@ -2001,8 +1806,12 @@ public:
   /// \return True if the statement was handled.
   bool EmitSimpleStmt(const Stmt *S);
 
-  RValue EmitCompoundStmt(const CompoundStmt &S, bool GetLast = false,
-                          AggValueSlot AVS = AggValueSlot::ignored());
+  llvm::Value *EmitCompoundStmt(const CompoundStmt &S, bool GetLast = false,
+                                AggValueSlot AVS = AggValueSlot::ignored());
+  llvm::Value *EmitCompoundStmtWithoutScope(const CompoundStmt &S,
+                                            bool GetLast = false,
+                                            AggValueSlot AVS =
+                                                AggValueSlot::ignored());
 
   /// EmitLabel - Emit the block for the given label. It is legal to call this
   /// function even if there is no current insertion point.
@@ -2039,6 +1848,10 @@ public:
 
   void EmitCXXTryStmt(const CXXTryStmt &S);
   void EmitCXXForRangeStmt(const CXXForRangeStmt &S);
+
+  llvm::Function *EmitCapturedStmt(const CapturedStmt &S, CapturedRegionKind K);
+  llvm::Function *GenerateCapturedStmtFunction(const CapturedDecl *CD,
+                                               const RecordDecl *RD);
 
   //===--------------------------------------------------------------------===//
   //                         LValue Expression Emission
@@ -2081,6 +1894,15 @@ public:
   /// that the address will be used to access the object.
   LValue EmitCheckedLValue(const Expr *E, TypeCheckKind TCK);
 
+  RValue convertTempToRValue(llvm::Value *addr, QualType type);
+
+  void EmitAtomicInit(Expr *E, LValue lvalue);
+
+  RValue EmitAtomicLoad(LValue lvalue,
+                        AggValueSlot slot = AggValueSlot::ignored());
+
+  void EmitAtomicStore(RValue rvalue, LValue lvalue, bool isInit);
+
   /// EmitToMemory - Change a scalar value from its value
   /// representation to its in-memory representation.
   llvm::Value *EmitToMemory(llvm::Value *Value, QualType Ty);
@@ -2094,7 +1916,9 @@ public:
   /// the LLVM value representation.
   llvm::Value *EmitLoadOfScalar(llvm::Value *Addr, bool Volatile,
                                 unsigned Alignment, QualType Ty,
-                                llvm::MDNode *TBAAInfo = 0);
+                                llvm::MDNode *TBAAInfo = 0,
+                                QualType TBAABaseTy = QualType(),
+                                uint64_t TBAAOffset = 0);
 
   /// EmitLoadOfScalar - Load a scalar value from an address, taking
   /// care to appropriately convert from the memory representation to
@@ -2107,7 +1931,9 @@ public:
   /// the LLVM value representation.
   void EmitStoreOfScalar(llvm::Value *Value, llvm::Value *Addr,
                          bool Volatile, unsigned Alignment, QualType Ty,
-                         llvm::MDNode *TBAAInfo = 0, bool isInit=false);
+                         llvm::MDNode *TBAAInfo = 0, bool isInit = false,
+                         QualType TBAABaseTy = QualType(),
+                         uint64_t TBAAOffset = 0);
 
   /// EmitStoreOfScalar - Store a scalar value to an address, taking
   /// care to appropriately convert from the memory representation to
@@ -2141,6 +1967,8 @@ public:
   /// Emit an l-value for an assignment (simple or compound) of complex type.
   LValue EmitComplexAssignmentLValue(const BinaryOperator *E);
   LValue EmitComplexCompoundAssignmentLValue(const CompoundAssignOperator *E);
+  LValue EmitScalarCompooundAssignWithComplex(const CompoundAssignOperator *E,
+                                              llvm::Value *&Result);
 
   // Note: only available for agg return types
   LValue EmitBinaryOperatorLValue(const BinaryOperator *E);
@@ -2154,7 +1982,8 @@ public:
   LValue EmitObjCEncodeExprLValue(const ObjCEncodeExpr *E);
   LValue EmitPredefinedLValue(const PredefinedExpr *E);
   LValue EmitUnaryOpLValue(const UnaryOperator *E);
-  LValue EmitArraySubscriptExpr(const ArraySubscriptExpr *E);
+  LValue EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
+                                bool Accessed = false);
   LValue EmitExtVectorElementExpr(const ExtVectorElementExpr *E);
   LValue EmitMemberExpr(const MemberExpr *E);
   LValue EmitObjCIsaExpr(const ObjCIsaExpr *E);
@@ -2181,7 +2010,7 @@ public:
       return ConstantEmission(C, false);
     }
 
-    operator bool() const { return ValueAndIsReference.getOpaqueValue() != 0; }
+    LLVM_EXPLICIT operator bool() const { return ValueAndIsReference.getOpaqueValue() != 0; }
 
     bool isReference() const { return ValueAndIsReference.getInt(); }
     LValue getReferenceLValue(CodeGenFunction &CGF, Expr *refExpr) const {
@@ -2205,6 +2034,7 @@ public:
   llvm::Value *EmitIvarOffset(const ObjCInterfaceDecl *Interface,
                               const ObjCIvarDecl *Ivar);
   LValue EmitLValueForField(LValue Base, const FieldDecl* Field);
+  LValue EmitLValueForLambdaField(const FieldDecl *Field);
 
   /// EmitLValueForFieldInitialization - Like EmitLValueForField, except that
   /// if the Field is a reference, this will return the address of the reference
@@ -2254,11 +2084,29 @@ public:
   RValue EmitCallExpr(const CallExpr *E,
                       ReturnValueSlot ReturnValue = ReturnValueSlot());
 
+  llvm::CallInst *EmitRuntimeCall(llvm::Value *callee,
+                                  const Twine &name = "");
+  llvm::CallInst *EmitRuntimeCall(llvm::Value *callee,
+                                  ArrayRef<llvm::Value*> args,
+                                  const Twine &name = "");
+  llvm::CallInst *EmitNounwindRuntimeCall(llvm::Value *callee,
+                                          const Twine &name = "");
+  llvm::CallInst *EmitNounwindRuntimeCall(llvm::Value *callee,
+                                          ArrayRef<llvm::Value*> args,
+                                          const Twine &name = "");
+
   llvm::CallSite EmitCallOrInvoke(llvm::Value *Callee,
                                   ArrayRef<llvm::Value *> Args,
                                   const Twine &Name = "");
   llvm::CallSite EmitCallOrInvoke(llvm::Value *Callee,
                                   const Twine &Name = "");
+  llvm::CallSite EmitRuntimeCallOrInvoke(llvm::Value *callee,
+                                         ArrayRef<llvm::Value*> args,
+                                         const Twine &name = "");
+  llvm::CallSite EmitRuntimeCallOrInvoke(llvm::Value *callee,
+                                         const Twine &name = "");
+  void EmitNoreturnRuntimeCallOrInvoke(llvm::Value *callee,
+                                       ArrayRef<llvm::Value*> args);
 
   llvm::Value *BuildVirtualCall(const CXXMethodDecl *MD, llvm::Value *This,
                                 llvm::Type *Ty);
@@ -2277,7 +2125,8 @@ public:
                            llvm::Value *Callee,
                            ReturnValueSlot ReturnValue,
                            llvm::Value *This,
-                           llvm::Value *VTT,
+                           llvm::Value *ImplicitParam,
+                           QualType ImplicitParamTy,
                            CallExpr::const_arg_iterator ArgBeg,
                            CallExpr::const_arg_iterator ArgEnd);
   RValue EmitCXXMemberCallExpr(const CXXMemberCallExpr *E,
@@ -2305,6 +2154,7 @@ public:
   /// is unhandled by the current target.
   llvm::Value *EmitTargetBuiltinExpr(unsigned BuiltinID, const CallExpr *E);
 
+  llvm::Value *EmitAArch64BuiltinExpr(unsigned BuiltinID, const CallExpr *E);
   llvm::Value *EmitARMBuiltinExpr(unsigned BuiltinID, const CallExpr *E);
   llvm::Value *EmitNeonCall(llvm::Function *F,
                             SmallVectorImpl<llvm::Value*> &O,
@@ -2348,14 +2198,14 @@ public:
   llvm::Value *EmitARCRetainAutorelease(QualType type, llvm::Value *value);
   llvm::Value *EmitARCRetainAutoreleaseNonBlock(llvm::Value *value);
   llvm::Value *EmitARCStoreStrong(LValue lvalue, llvm::Value *value,
-                                  bool ignored);
+                                  bool resultIgnored);
   llvm::Value *EmitARCStoreStrongCall(llvm::Value *addr, llvm::Value *value,
-                                      bool ignored);
+                                      bool resultIgnored);
   llvm::Value *EmitARCRetain(QualType type, llvm::Value *value);
   llvm::Value *EmitARCRetainNonBlock(llvm::Value *value);
   llvm::Value *EmitARCRetainBlock(llvm::Value *value, bool mandatory);
-  void EmitARCDestroyStrong(llvm::Value *addr, bool precise);
-  void EmitARCRelease(llvm::Value *value, bool precise);
+  void EmitARCDestroyStrong(llvm::Value *addr, ARCPreciseLifetime_t precise);
+  void EmitARCRelease(llvm::Value *value, ARCPreciseLifetime_t precise);
   llvm::Value *EmitARCAutorelease(llvm::Value *value);
   llvm::Value *EmitARCAutoreleaseReturnValue(llvm::Value *value);
   llvm::Value *EmitARCRetainAutoreleaseReturnValue(llvm::Value *value);
@@ -2376,6 +2226,8 @@ public:
   llvm::Value *EmitARCRetainScalarExpr(const Expr *expr);
   llvm::Value *EmitARCRetainAutoreleaseScalarExpr(const Expr *expr);
 
+  void EmitARCIntrinsicUse(llvm::ArrayRef<llvm::Value*> values);
+
   static Destroyer destroyARCStrongImprecise;
   static Destroyer destroyARCStrongPrecise;
   static Destroyer destroyARCWeak;
@@ -2386,10 +2238,8 @@ public:
   void EmitObjCAutoreleasePoolCleanup(llvm::Value *Ptr);
   void EmitObjCMRRAutoreleasePoolPop(llvm::Value *Ptr); 
 
-  /// EmitReferenceBindingToExpr - Emits a reference binding to the passed in
-  /// expression. Will emit a temporary variable if E is not an LValue.
-  RValue EmitReferenceBindingToExpr(const Expr* E,
-                                    const NamedDecl *InitializedDecl);
+  /// \brief Emits a reference binding to the passed in expression.
+  RValue EmitReferenceBindingToExpr(const Expr *E);
 
   //===--------------------------------------------------------------------===//
   //                           Expression Emission
@@ -2437,16 +2287,15 @@ public:
                                 bool IgnoreReal = false,
                                 bool IgnoreImag = false);
 
-  /// EmitComplexExprIntoAddr - Emit the computation of the specified expression
-  /// of complex type, storing into the specified Value*.
-  void EmitComplexExprIntoAddr(const Expr *E, llvm::Value *DestAddr,
-                               bool DestIsVolatile);
+  /// EmitComplexExprIntoLValue - Emit the given expression of complex
+  /// type and place its result into the specified l-value.
+  void EmitComplexExprIntoLValue(const Expr *E, LValue dest, bool isInit);
 
-  /// StoreComplexToAddr - Store a complex number into the specified address.
-  void StoreComplexToAddr(ComplexPairTy V, llvm::Value *DestAddr,
-                          bool DestIsVolatile);
-  /// LoadComplexFromAddr - Load a complex number from the specified address.
-  ComplexPairTy LoadComplexFromAddr(llvm::Value *SrcAddr, bool SrcIsVolatile);
+  /// EmitStoreOfComplex - Store a complex number into the specified l-value.
+  void EmitStoreOfComplex(ComplexPairTy V, LValue dest, bool isInit);
+
+  /// EmitLoadOfComplex - Load a complex number from the specified l-value.
+  ComplexPairTy EmitLoadOfComplex(LValue src);
 
   /// CreateStaticVarDecl - Create a zero-initialized LLVM global for
   /// a static local variable.
@@ -2483,8 +2332,8 @@ public:
   /// GenerateCXXGlobalInitFunc - Generates code for initializing global
   /// variables.
   void GenerateCXXGlobalInitFunc(llvm::Function *Fn,
-                                 llvm::Constant **Decls,
-                                 unsigned NumDecls);
+                                 ArrayRef<llvm::Constant *> Decls,
+                                 llvm::GlobalVariable *Guard = 0);
 
   /// GenerateCXXGlobalDtorsFunc - Generates code for destroying global
   /// variables.
@@ -2508,7 +2357,7 @@ public:
   }
   void enterNonTrivialFullExpression(const ExprWithCleanups *E);
 
-  void EmitCXXThrowExpr(const CXXThrowExpr *E);
+  void EmitCXXThrowExpr(const CXXThrowExpr *E, bool KeepInsertionPoint = true);
 
   void EmitLambdaExpr(const LambdaExpr *E, AggValueSlot Dest);
 
@@ -2593,7 +2442,7 @@ public:
 
   /// \brief Create a basic block that will call the trap intrinsic, and emit a
   /// conditional branch to it, for the -ftrapv checks.
-  void EmitTrapvCheck(llvm::Value *Checked);
+  void EmitTrapCheck(llvm::Value *Checked);
 
   /// EmitCallArg - Emit a single call argument.
   void EmitCallArg(CallArgList &args, const Expr *E, QualType ArgType);

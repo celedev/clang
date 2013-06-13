@@ -215,12 +215,15 @@ private:
   /// Address points - Address points for all vtables.
   AddressPointsMapTy AddressPoints;
 
+  bool IsMicrosoftABI;
+
 public:
   VTableLayout(uint64_t NumVTableComponents,
                const VTableComponent *VTableComponents,
                uint64_t NumVTableThunks,
                const VTableThunkTy *VTableThunks,
-               const AddressPointsMapTy &AddressPoints);
+               const AddressPointsMapTy &AddressPoints,
+               bool IsMicrosoftABI);
   ~VTableLayout();
 
   uint64_t getNumVTableComponents() const {
@@ -252,7 +255,8 @@ public:
            "Did not find address point!");
 
     uint64_t AddressPoint = AddressPoints.lookup(Base);
-    assert(AddressPoint && "Address point must not be zero!");
+    assert(AddressPoint != 0 || IsMicrosoftABI);
+    (void)IsMicrosoftABI;
 
     return AddressPoint;
   }
@@ -271,6 +275,8 @@ public:
   typedef SmallVector<ThunkInfo, 1> ThunkInfoVectorTy;
 
 private:
+  bool IsMicrosoftABI;
+
   /// MethodVTableIndices - Contains the index (relative to the vtable address
   /// point) where the function pointer for a virtual function is stored.
   typedef llvm::DenseMap<GlobalDecl, int64_t> MethodVTableIndicesTy;
@@ -279,10 +285,6 @@ private:
   typedef llvm::DenseMap<const CXXRecordDecl *, const VTableLayout *>
     VTableLayoutMapTy;
   VTableLayoutMapTy VTableLayouts;
-
-  /// NumVirtualFunctionPointers - Contains the number of virtual function
-  /// pointers in the vtable for a given record decl.
-  llvm::DenseMap<const CXXRecordDecl *, uint64_t> NumVirtualFunctionPointers;
 
   typedef std::pair<const CXXRecordDecl *,
                     const CXXRecordDecl *> ClassPairTy;
@@ -299,16 +301,25 @@ private:
   /// Thunks - Contains all thunks that a given method decl will need.
   ThunksMapTy Thunks;
 
-  void ComputeMethodVTableIndices(const CXXRecordDecl *RD);
-
   /// ComputeVTableRelatedInformation - Compute and store all vtable related
   /// information (vtable layout, vbase offset offsets, thunks etc) for the
   /// given record decl.
   void ComputeVTableRelatedInformation(const CXXRecordDecl *RD);
 
+  /// ErrorUnsupported - Print out an error that the v-table layout code
+  /// doesn't support the particular C++ feature yet.
+  void ErrorUnsupported(StringRef Feature, SourceLocation Location);
+
 public:
-  VTableContext(ASTContext &Context) : Context(Context) {}
+  VTableContext(ASTContext &Context);
   ~VTableContext();
+
+  bool isMicrosoftABI() const {
+    // FIXME: Currently, this method is only used in the VTableContext and
+    // VTableBuilder code which is ABI-specific. Probably we can remove it
+    // when we add a layer of abstraction for vtable generation.
+    return IsMicrosoftABI;
+  }
 
   const VTableLayout &getVTableLayout(const CXXRecordDecl *RD) {
     ComputeVTableRelatedInformation(RD);
@@ -334,10 +345,6 @@ public:
 
     return &I->second;
   }
-
-  /// getNumVirtualFunctionPointers - Return the number of virtual function
-  /// pointers in the vtable for a given record decl.
-  uint64_t getNumVirtualFunctionPointers(const CXXRecordDecl *RD);
 
   /// getMethodVTableIndex - Return the index (relative to the vtable address
   /// point) where the function pointer for the given virtual function is
