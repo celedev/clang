@@ -224,8 +224,7 @@ static BaseOffset ComputeBaseOffset(ASTContext &Context,
     if (Element.Base->isVirtual()) {
       NonVirtualStart = I;
       QualType VBaseType = Element.Base->getType();
-      VirtualBase =
-        cast<CXXRecordDecl>(VBaseType->getAs<RecordType>()->getDecl());
+      VirtualBase = VBaseType->getAsCXXRecordDecl();
       break;
     }
   }
@@ -237,8 +236,7 @@ static BaseOffset ComputeBaseOffset(ASTContext &Context,
     // Check the base class offset.
     const ASTRecordLayout &Layout = Context.getASTRecordLayout(Element.Class);
 
-    const RecordType *BaseType = Element.Base->getType()->getAs<RecordType>();
-    const CXXRecordDecl *Base = cast<CXXRecordDecl>(BaseType->getDecl());
+    const CXXRecordDecl *Base = Element.Base->getType()->getAsCXXRecordDecl();
 
     NonVirtualOffset += Layout.getBaseClassOffset(Base);
   }
@@ -341,8 +339,7 @@ FinalOverriders::ComputeBaseOffsets(BaseSubobject Base, bool IsVirtual,
   // Traverse our bases.
   for (CXXRecordDecl::base_class_const_iterator I = RD->bases_begin(),
        E = RD->bases_end(); I != E; ++I) {
-    const CXXRecordDecl *BaseDecl = 
-      cast<CXXRecordDecl>(I->getType()->getAs<RecordType>()->getDecl());
+    const CXXRecordDecl *BaseDecl = I->getType()->getAsCXXRecordDecl();
 
     CharUnits BaseOffset;
     CharUnits BaseOffsetInLayoutClass;
@@ -379,8 +376,7 @@ void FinalOverriders::dump(raw_ostream &Out, BaseSubobject Base,
 
   for (CXXRecordDecl::base_class_const_iterator I = RD->bases_begin(),
        E = RD->bases_end(); I != E; ++I) {
-    const CXXRecordDecl *BaseDecl = 
-      cast<CXXRecordDecl>(I->getType()->getAs<RecordType>()->getDecl());
+    const CXXRecordDecl *BaseDecl = I->getType()->getAsCXXRecordDecl();
     
     // Ignore bases that don't have any virtual member functions.
     if (!BaseDecl->isPolymorphic())
@@ -725,8 +721,7 @@ void VCallAndVBaseOffsetBuilder::AddVCallOffsets(BaseSubobject Base,
     if (I->isVirtual())
       continue;
 
-    const CXXRecordDecl *BaseDecl =
-      cast<CXXRecordDecl>(I->getType()->getAs<RecordType>()->getDecl());
+    const CXXRecordDecl *BaseDecl = I->getType()->getAsCXXRecordDecl();
     if (BaseDecl == PrimaryBase)
       continue;
 
@@ -748,8 +743,7 @@ VCallAndVBaseOffsetBuilder::AddVBaseOffsets(const CXXRecordDecl *RD,
   // Add vbase offsets.
   for (CXXRecordDecl::base_class_const_iterator I = RD->bases_begin(),
        E = RD->bases_end(); I != E; ++I) {
-    const CXXRecordDecl *BaseDecl =
-      cast<CXXRecordDecl>(I->getType()->getAs<RecordType>()->getDecl());
+    const CXXRecordDecl *BaseDecl = I->getType()->getAsCXXRecordDecl();
 
     // Check if this is a virtual base that we haven't visited before.
     if (I->isVirtual() && VisitedVirtualBases.insert(BaseDecl)) {
@@ -1074,8 +1068,8 @@ void VTableBuilder::AddThunk(const CXXMethodDecl *MD, const ThunkInfo &Thunk) {
   assert(!isBuildingConstructorVTable() && 
          "Can't add thunks for construction vtable");
 
-  SmallVector<ThunkInfo, 1> &ThunksVector = Thunks[MD];
-  
+  SmallVectorImpl<ThunkInfo> &ThunksVector = Thunks[MD];
+
   // Check if we have this thunk already.
   if (std::find(ThunksVector.begin(), ThunksVector.end(), Thunk) != 
       ThunksVector.end())
@@ -1772,8 +1766,7 @@ void VTableBuilder::LayoutSecondaryVTables(BaseSubobject Base,
     if (I->isVirtual())
       continue;
     
-    const CXXRecordDecl *BaseDecl = 
-      cast<CXXRecordDecl>(I->getType()->getAs<RecordType>()->getDecl());
+    const CXXRecordDecl *BaseDecl = I->getType()->getAsCXXRecordDecl();
 
     // Ignore bases that don't have a vtable.
     if (!BaseDecl->isDynamicClass())
@@ -1849,8 +1842,7 @@ VTableBuilder::DeterminePrimaryVirtualBases(const CXXRecordDecl *RD,
   // Traverse bases, looking for more primary virtual bases.
   for (CXXRecordDecl::base_class_const_iterator I = RD->bases_begin(),
        E = RD->bases_end(); I != E; ++I) {
-    const CXXRecordDecl *BaseDecl = 
-      cast<CXXRecordDecl>(I->getType()->getAs<RecordType>()->getDecl());
+    const CXXRecordDecl *BaseDecl = I->getType()->getAsCXXRecordDecl();
 
     CharUnits BaseOffsetInLayoutClass;
     
@@ -1881,8 +1873,7 @@ VTableBuilder::LayoutVTablesForVirtualBases(const CXXRecordDecl *RD,
   //   the classes for which they are primary).
   for (CXXRecordDecl::base_class_const_iterator I = RD->bases_begin(),
        E = RD->bases_end(); I != E; ++I) {
-    const CXXRecordDecl *BaseDecl = 
-      cast<CXXRecordDecl>(I->getType()->getAs<RecordType>()->getDecl());
+    const CXXRecordDecl *BaseDecl = I->getType()->getAsCXXRecordDecl();
 
     // Check if this base needs a vtable. (If it's virtual, not a primary base
     // of some other class, and we haven't visited it before).
@@ -1914,6 +1905,8 @@ VTableBuilder::LayoutVTablesForVirtualBases(const CXXRecordDecl *RD,
 
 /// dumpLayout - Dump the vtable layout.
 void VTableBuilder::dumpLayout(raw_ostream& Out) {
+  // FIXME: write more tests that actually use the dumpLayout output to prevent
+  // VTableBuilder regressions.
 
   if (isBuildingConstructorVTable()) {
     Out << "Construction vtable for ('";
@@ -2166,7 +2159,7 @@ void VTableBuilder::dumpLayout(raw_ostream& Out) {
         
         // If this function pointer has a return pointer adjustment, dump it.
         if (!Thunk.Return.isEmpty()) {
-          Out << "return adjustment: " << Thunk.This.NonVirtual;
+          Out << "return adjustment: " << Thunk.Return.NonVirtual;
           Out << " non-virtual";
           if (Thunk.Return.VBaseOffsetOffset) {
             Out << ", " << Thunk.Return.VBaseOffsetOffset;
@@ -2272,8 +2265,7 @@ VTableLayout::VTableLayout(uint64_t NumVTableComponents,
 VTableLayout::~VTableLayout() { }
 
 VTableContext::VTableContext(ASTContext &Context)
-  : Context(Context),
-    IsMicrosoftABI(Context.getTargetInfo().getCXXABI().isMicrosoft()) {
+  : IsMicrosoftABI(Context.getTargetInfo().getCXXABI().isMicrosoft()) {
 }
 
 VTableContext::~VTableContext() {
@@ -2361,9 +2353,8 @@ void VTableContext::ComputeVTableRelatedInformation(const CXXRecordDecl *RD) {
   if (!RD->getNumVBases())
     return;
   
-  const RecordType *VBaseRT = 
-    RD->vbases_begin()->getType()->getAs<RecordType>();
-  const CXXRecordDecl *VBase = cast<CXXRecordDecl>(VBaseRT->getDecl());
+  const CXXRecordDecl *VBase =
+    RD->vbases_begin()->getType()->getAsCXXRecordDecl();
   
   if (VirtualBaseClassOffsetOffsets.count(std::make_pair(RD, VBase)))
     return;
@@ -2376,14 +2367,6 @@ void VTableContext::ComputeVTableRelatedInformation(const CXXRecordDecl *RD) {
     
     VirtualBaseClassOffsetOffsets.insert(std::make_pair(ClassPair, I->second));
   }
-}
-
-void VTableContext::ErrorUnsupported(StringRef Feature,
-                                     SourceLocation Location) {
-  clang::DiagnosticsEngine &Diags = Context.getDiagnostics();
-  unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
-                                  "v-table layout for %0 is not supported yet");
-  Diags.Report(Context.getFullLoc(Location), DiagID) << Feature;
 }
 
 VTableLayout *VTableContext::createConstructionVTableLayout(

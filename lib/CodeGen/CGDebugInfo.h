@@ -60,14 +60,14 @@ class CGDebugInfo {
   llvm::DIType OCLImage2dDITy, OCLImage2dArrayDITy;
   llvm::DIType OCLImage3dDITy;
   llvm::DIType OCLEventDITy;
+  llvm::DIType BlockLiteralGeneric;
 
   /// TypeCache - Cache of previously constructed Types.
   llvm::DenseMap<void *, llvm::WeakVH> TypeCache;
 
   /// ObjCInterfaceCache - Cache of previously constructed interfaces
   /// which may change. Storing a pair of DIType and checksum.
-  llvm::DenseMap<void *, std::pair<llvm::WeakVH, unsigned > >
-    ObjCInterfaceCache;
+  llvm::DenseMap<void *, std::pair<llvm::WeakVH, unsigned> > ObjCInterfaceCache;
 
   /// RetainedTypes - list of interfaces we want to keep even if orphaned.
   std::vector<void *> RetainedTypes;
@@ -78,9 +78,6 @@ class CGDebugInfo {
   /// ReplaceMap - Cache of forward declared types to RAUW at the end of
   /// compilation.
   std::vector<std::pair<void *, llvm::WeakVH> >ReplaceMap;
-
-  bool BlockLiteralGenericSet;
-  llvm::DIType BlockLiteralGeneric;
 
   // LexicalBlockStack - Keep track of our current nested lexical block.
   std::vector<llvm::TrackingVH<llvm::MDNode> > LexicalBlockStack;
@@ -166,7 +163,7 @@ class CGDebugInfo {
 
   llvm::DIArray
   CollectTemplateParams(const TemplateParameterList *TPList,
-                        const TemplateArgumentList &TAList,
+                        ArrayRef<TemplateArgument> TAList,
                         llvm::DIFile Unit);
   llvm::DIArray
   CollectFunctionTemplateParams(const FunctionDecl *FD, llvm::DIFile Unit);
@@ -288,6 +285,8 @@ public:
   /// debug info.
   llvm::DIType getOrCreateInterfaceType(QualType Ty,
                                         SourceLocation Loc);
+
+  void completeFwdDecl(const RecordDecl &TD);
 
 private:
   /// EmitDeclare - Emit call to llvm.dbg.declare for a variable declaration.

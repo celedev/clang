@@ -124,31 +124,14 @@ void CodeGenFunction::EmitVarDecl(const VarDecl &D) {
     llvm::GlobalValue::LinkageTypes Linkage =
       llvm::GlobalValue::InternalLinkage;
 
-    // If the function definition has some sort of weak linkage, its
-    // static variables should also be weak so that they get properly
-    // uniqued.  We can't do this in C, though, because there's no
-    // standard way to agree on which variables are the same (i.e.
-    // there's no mangling).
-    if (getLangOpts().CPlusPlus) {
-      const Decl *D = CurCodeDecl;
-      while (true) {
-        if (isa<BlockDecl>(D)) {
-          // FIXME: Handle this case properly!  (Should be similar to the
-          // way we handle lambdas in computeLVForDecl in Decl.cpp.)
-          break;
-        } else if (isa<CapturedDecl>(D)) {
-          D = cast<Decl>(cast<CapturedDecl>(D)->getParent());
-        } else {
-          break;
-        }
-      }
-      // FIXME: Do we really only care about FunctionDecls here?
-      if (D && isa<FunctionDecl>(D)) {
-        llvm::GlobalValue::LinkageTypes ParentLinkage =
-            CGM.getFunctionLinkage(cast<FunctionDecl>(D));
-        if (llvm::GlobalValue::isWeakForLinker(ParentLinkage))
-          Linkage = ParentLinkage;
-      }
+    // If the variable is externally visible, it must have weak linkage so it
+    // can be uniqued.
+    if (D.isExternallyVisible()) {
+      Linkage = llvm::GlobalValue::LinkOnceODRLinkage;
+
+      // FIXME: We need to force the emission/use of a guard variable for
+      // some variables even if we can constant-evaluate them because
+      // we can't guarantee every translation unit will constant-evaluate them.
     }
 
     return EmitStaticVarDecl(D, Linkage);
@@ -220,8 +203,7 @@ CodeGenFunction::CreateStaticVarDecl(const VarDecl &D,
                              llvm::GlobalVariable::NotThreadLocal,
                              AddrSpace);
   GV->setAlignment(getContext().getDeclAlign(&D).getQuantity());
-  if (Linkage != llvm::GlobalValue::InternalLinkage)
-    GV->setVisibility(CurFn->getVisibility());
+  CGM.setGlobalVisibility(GV, &D);
 
   if (D.getTLSKind())
     CGM.setTLSMode(GV, D);
@@ -1654,10 +1636,18 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg,
   }
 
   llvm::Value *DeclPtr;
+  bool HasNonScalarEvalKind = !CodeGenFunction::hasScalarEvaluationKind(Ty);
   // If this is an aggregate or variable sized value, reuse the input pointer.
-  if (!Ty->isConstantSizeType() ||
-      !CodeGenFunction::hasScalarEvaluationKind(Ty)) {
+  if (HasNonScalarEvalKind || !Ty->isConstantSizeType()) {
     DeclPtr = Arg;
+    // Push a destructor cleanup for this parameter if the ABI requires it.
+    if (HasNonScalarEvalKind &&
+        getTarget().getCXXABI().isArgumentDestroyedByCallee()) {
+      if (const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl()) {
+        if (RD->hasNonTrivialDestructor())
+          pushDestroy(QualType::DK_cxx_destructor, DeclPtr, Ty);
+      }
+    }
   } else {
     // Otherwise, create a temporary to hold the value.
     llvm::AllocaInst *Alloc = CreateTempAlloca(ConvertTypeForMem(Ty),

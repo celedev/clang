@@ -45,6 +45,9 @@ struct FormatStyle {
   /// \brief The penalty for each character outside of the column limit.
   unsigned PenaltyExcessCharacter;
 
+  /// \brief The penalty for breaking before the first "<<".
+  unsigned PenaltyBreakFirstLessLess;
+
   /// \brief Set whether & and * bind to the type as opposed to the variable.
   bool PointerBindsToType;
 
@@ -76,6 +79,18 @@ struct FormatStyle {
   /// \brief If false, a function call's or function definition's parameters
   /// will either all be on the same line or will have one line each.
   bool BinPackParameters;
+
+  /// \brief If true, clang-format detects whether function calls and
+  /// definitions are formatted with one parameter per line.
+  ///
+  /// Each call can be bin-packed, one-per-line or inconclusive. If it is
+  /// inconclusive, e.g. completely on one line, but a decision needs to be
+  /// made, clang-format analyzes whether there are other bin-packed cases in
+  /// the input file and act accordingly.
+  ///
+  /// NOTE: This is an experimental flag, that might go away or be renamed. Do
+  /// not use this in config files, etc. Use at your own risk.
+  bool ExperimentalAutoDetectBinPacking;
 
   /// \brief Allow putting all parameters of a function declaration onto
   /// the next line even if \c BinPackParameters is \c false.
@@ -110,6 +125,9 @@ struct FormatStyle {
   /// declaration.
   bool AlwaysBreakTemplateDeclarations;
 
+  /// \brief If \c true, always break before multiline string literals.
+  bool AlwaysBreakBeforeMultilineStrings;
+
   /// \brief If true, \c IndentWidth consecutive spaces will be replaced with
   /// tab characters.
   bool UseTab;
@@ -128,8 +146,24 @@ struct FormatStyle {
   /// \brief The brace breaking style to use.
   BraceBreakingStyle BreakBeforeBraces;
 
-  /// \brief If \c true, format { 1 }, otherwise {1}.
-  bool SpacesInBracedLists;
+  /// \brief If \c true, format braced lists as best suited for C++11 braced
+  /// lists.
+  ///
+  /// Important differences:
+  /// - No spaces inside the braced list.
+  /// - No line break before the closing brace.
+  /// - Indentation with the continuation indent, not with the block indent.
+  ///
+  /// Fundamentally, C++11 braced lists are formatted exactly like function
+  /// calls would be formatted in their place. If the braced list follows a name
+  /// (e.g. a type or variable name), clang-format formats as if the "{}" were
+  /// the parentheses of a function call with that name. If there is no name,
+  /// a zero-length name is assumed.
+  bool Cpp11BracedListStyle;
+
+  /// \brief If \c true, indent when breaking function declarations which
+  /// are not also definitions after the type.
+  bool IndentFunctionDeclarationAfterType;
 
   bool operator==(const FormatStyle &R) const {
     return AccessModifierOffset == R.AccessModifierOffset &&
@@ -140,26 +174,32 @@ struct FormatStyle {
                R.AllowShortIfStatementsOnASingleLine &&
            AlwaysBreakTemplateDeclarations ==
                R.AlwaysBreakTemplateDeclarations &&
+           AlwaysBreakBeforeMultilineStrings ==
+               R.AlwaysBreakBeforeMultilineStrings &&
            BinPackParameters == R.BinPackParameters &&
            BreakBeforeBraces == R.BreakBeforeBraces &&
            ColumnLimit == R.ColumnLimit &&
            ConstructorInitializerAllOnOneLineOrOnePerLine ==
                R.ConstructorInitializerAllOnOneLineOrOnePerLine &&
            DerivePointerBinding == R.DerivePointerBinding &&
+           ExperimentalAutoDetectBinPacking ==
+               R.ExperimentalAutoDetectBinPacking &&
            IndentCaseLabels == R.IndentCaseLabels &&
            IndentWidth == R.IndentWidth &&
            MaxEmptyLinesToKeep == R.MaxEmptyLinesToKeep &&
            ObjCSpaceBeforeProtocolList == R.ObjCSpaceBeforeProtocolList &&
-           PenaltyBreakString == R.PenaltyBreakString &&
            PenaltyBreakComment == R.PenaltyBreakComment &&
+           PenaltyBreakFirstLessLess == R.PenaltyBreakFirstLessLess &&
+           PenaltyBreakString == R.PenaltyBreakString &&
            PenaltyExcessCharacter == R.PenaltyExcessCharacter &&
            PenaltyReturnTypeOnItsOwnLine == R.PenaltyReturnTypeOnItsOwnLine &&
            PointerBindsToType == R.PointerBindsToType &&
            SpacesBeforeTrailingComments == R.SpacesBeforeTrailingComments &&
-           SpacesInBracedLists == R.SpacesInBracedLists &&
-           Standard == R.Standard && UseTab == R.UseTab;
+           Cpp11BracedListStyle == R.Cpp11BracedListStyle &&
+           Standard == R.Standard && UseTab == R.UseTab &&
+           IndentFunctionDeclarationAfterType ==
+               R.IndentFunctionDeclarationAfterType;
   }
-
 };
 
 /// \brief Returns a format style complying with the LLVM coding standards:
@@ -213,7 +253,11 @@ tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
                                StringRef FileName = "<stdin>");
 
 /// \brief Returns the \c LangOpts that the formatter expects you to set.
-LangOptions getFormattingLangOpts();
+///
+/// \param Standard determines lexing mode: LC_Cpp11 and LS_Auto turn on C++11
+/// lexing mode, LS_Cpp03 - C++03 mode.
+LangOptions getFormattingLangOpts(FormatStyle::LanguageStandard Standard =
+                                      FormatStyle::LS_Cpp11);
 
 } // end namespace format
 } // end namespace clang

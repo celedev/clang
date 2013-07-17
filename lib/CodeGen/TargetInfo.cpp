@@ -443,6 +443,10 @@ class PNaClTargetCodeGenInfo : public TargetCodeGenInfo {
  public:
   PNaClTargetCodeGenInfo(CodeGen::CodeGenTypes &CGT)
     : TargetCodeGenInfo(new PNaClABIInfo(CGT)) {}
+
+  /// For PNaCl we don't want llvm.pow.* intrinsics to be emitted instead
+  /// of library function calls.
+  bool emitIntrinsicForPow() const { return false; }
 };
 
 void PNaClABIInfo::computeInfo(CGFunctionInfo &FI) const {
@@ -574,6 +578,9 @@ public:
   X86_32TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT,
       bool d, bool p, bool w, unsigned r)
     :TargetCodeGenInfo(new X86_32ABIInfo(CGT, d, p, w, r)) {}
+
+  static bool isStructReturnInRegABI(
+      const llvm::Triple &Triple, const CodeGenOptions &Opts);
 
   void SetTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
                            CodeGen::CodeGenModule &CGM) const;
@@ -894,9 +901,7 @@ ABIArgInfo X86_32ABIInfo::classifyArgumentType(QualType Ty,
     bool NeedsPadding;
     if (shouldUseInReg(Ty, FreeRegs, IsFastCall, NeedsPadding)) {
       unsigned SizeInRegs = (getContext().getTypeSize(Ty) + 31) / 32;
-      SmallVector<llvm::Type*, 3> Elements;
-      for (unsigned I = 0; I < SizeInRegs; ++I)
-        Elements.push_back(Int32);
+      SmallVector<llvm::Type*, 3> Elements(SizeInRegs, Int32);
       llvm::Type *Result = llvm::StructType::get(LLVMContext, Elements);
       return ABIArgInfo::getDirectInReg(Result);
     }
@@ -1293,8 +1298,9 @@ static std::string qualifyWindowsLibrary(llvm::StringRef Lib) {
 
 class WinX86_32TargetCodeGenInfo : public X86_32TargetCodeGenInfo {
 public:
-  WinX86_32TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, unsigned RegParms)
-    : X86_32TargetCodeGenInfo(CGT, false, true, true, RegParms) {}
+  WinX86_32TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT,
+        bool d, bool p, bool w, unsigned RegParms)
+    : X86_32TargetCodeGenInfo(CGT, d, p, w, RegParms) {}
 
   void getDependentLibraryOption(llvm::StringRef Lib,
                                  llvm::SmallString<24> &Opt) const {
@@ -3336,12 +3342,12 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty, int *VFPRegs,
             ABIArgInfo::getExtend() : ABIArgInfo::getDirect());
   }
 
+  if (CGCXXABI::RecordArgABI RAA = getRecordArgABI(Ty, CGT))
+    return ABIArgInfo::getIndirect(0, RAA == CGCXXABI::RAA_DirectInMemory);
+
   // Ignore empty records.
   if (isEmptyRecord(getContext(), Ty, true))
     return ABIArgInfo::getIgnore();
-
-  if (CGCXXABI::RecordArgABI RAA = getRecordArgABI(Ty, CGT))
-    return ABIArgInfo::getIndirect(0, RAA == CGCXXABI::RAA_DirectInMemory);
 
   if (getABIKind() == ARMABIInfo::AAPCS_VFP) {
     // Homogeneous Aggregates need to be expanded when we can fit the aggregate
@@ -3588,6 +3594,12 @@ llvm::Value *ARMABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
   CGBuilderTy &Builder = CGF.Builder;
   llvm::Value *VAListAddrAsBPP = Builder.CreateBitCast(VAListAddr, BPP, "ap");
   llvm::Value *Addr = Builder.CreateLoad(VAListAddrAsBPP, "ap.cur");
+
+  if (isEmptyRecord(getContext(), Ty, true)) {
+    // These are ignored for parameter passing purposes.
+    llvm::Type *PTy = llvm::PointerType::getUnqual(CGF.ConvertType(Ty));
+    return Builder.CreateBitCast(Addr, PTy);
+  }
 
   uint64_t Size = CGF.getContext().getTypeSize(Ty) / 8;
   uint64_t TyAlign = CGF.getContext().getTypeAlign(Ty) / 8;
@@ -4444,6 +4456,36 @@ llvm::Value *SystemZABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
   return ResAddr;
 }
 
+bool X86_32TargetCodeGenInfo::isStructReturnInRegABI(
+    const llvm::Triple &Triple, const CodeGenOptions &Opts) {
+  assert(Triple.getArch() == llvm::Triple::x86);
+
+  switch (Opts.getStructReturnConvention()) {
+  case CodeGenOptions::SRCK_Default:
+    break;
+  case CodeGenOptions::SRCK_OnStack:  // -fpcc-struct-return
+    return false;
+  case CodeGenOptions::SRCK_InRegs:  // -freg-struct-return
+    return true;
+  }
+
+  if (Triple.isOSDarwin())
+    return true;
+
+  switch (Triple.getOS()) {
+  case llvm::Triple::Cygwin:
+  case llvm::Triple::MinGW32:
+  case llvm::Triple::AuroraUX:
+  case llvm::Triple::DragonFly:
+  case llvm::Triple::FreeBSD:
+  case llvm::Triple::OpenBSD:
+  case llvm::Triple::Bitrig:
+  case llvm::Triple::Win32:
+    return true;
+  default:
+    return false;
+  }
+}
 
 ABIArgInfo SystemZABIInfo::classifyReturnType(QualType RetTy) const {
   if (RetTy->isVoidType())
@@ -4655,7 +4697,7 @@ class MipsABIInfo : public ABIInfo {
   bool IsO32;
   unsigned MinABIStackAlignInBytes, StackAlignInBytes;
   void CoerceToIntArgs(uint64_t TySize,
-                       SmallVector<llvm::Type*, 8> &ArgList) const;
+                       SmallVectorImpl<llvm::Type *> &ArgList) const;
   llvm::Type* HandleAggregates(QualType Ty, uint64_t TySize) const;
   llvm::Type* returnAggregateInRegs(QualType RetTy, uint64_t Size) const;
   llvm::Type* getPaddingType(uint64_t Align, uint64_t Offset) const;
@@ -4705,7 +4747,7 @@ public:
 }
 
 void MipsABIInfo::CoerceToIntArgs(uint64_t TySize,
-                                  SmallVector<llvm::Type*, 8> &ArgList) const {
+                                  SmallVectorImpl<llvm::Type *> &ArgList) const {
   llvm::IntegerType *IntTy =
     llvm::IntegerType::get(getVMContext(), MinABIStackAlignInBytes * 8);
 
@@ -5506,31 +5548,22 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
     return *(TheTargetCodeGenInfo = new TCETargetCodeGenInfo(Types));
 
   case llvm::Triple::x86: {
-    if (Triple.isOSDarwin())
-      return *(TheTargetCodeGenInfo =
-               new X86_32TargetCodeGenInfo(Types, true, true, false,
-                                           CodeGenOpts.NumRegisterParameters));
+    bool IsDarwinVectorABI = Triple.isOSDarwin();
+    bool IsSmallStructInRegABI =
+        X86_32TargetCodeGenInfo::isStructReturnInRegABI(Triple, CodeGenOpts);
+    bool IsWin32FloatStructABI = (Triple.getOS() == llvm::Triple::Win32);
 
-    switch (Triple.getOS()) {
-    case llvm::Triple::Cygwin:
-    case llvm::Triple::MinGW32:
-    case llvm::Triple::AuroraUX:
-    case llvm::Triple::DragonFly:
-    case llvm::Triple::FreeBSD:
-    case llvm::Triple::OpenBSD:
-    case llvm::Triple::Bitrig:
-      return *(TheTargetCodeGenInfo =
-               new X86_32TargetCodeGenInfo(Types, false, true, false,
-                                           CodeGenOpts.NumRegisterParameters));
-
-    case llvm::Triple::Win32:
+    if (Triple.getOS() == llvm::Triple::Win32) {
       return *(TheTargetCodeGenInfo =
                new WinX86_32TargetCodeGenInfo(Types,
+                                              IsDarwinVectorABI, IsSmallStructInRegABI,
+                                              IsWin32FloatStructABI,
                                               CodeGenOpts.NumRegisterParameters));
-
-    default:
+    } else {
       return *(TheTargetCodeGenInfo =
-               new X86_32TargetCodeGenInfo(Types, false, false, false,
+               new X86_32TargetCodeGenInfo(Types,
+                                           IsDarwinVectorABI, IsSmallStructInRegABI,
+                                           IsWin32FloatStructABI,
                                            CodeGenOpts.NumRegisterParameters));
     }
   }

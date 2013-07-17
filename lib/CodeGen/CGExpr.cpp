@@ -321,6 +321,13 @@ LValue CodeGenFunction::EmitMaterializeTemporaryExpr(
     llvm::Value *Object = createReferenceTemporary(*this, M, E);
     LValue RefTempDst = MakeAddrLValue(Object, M->getType());
 
+    if (llvm::GlobalVariable *Var = dyn_cast<llvm::GlobalVariable>(Object)) {
+      // We should not have emitted the initializer for this temporary as a
+      // constant.
+      assert(!Var->hasInitializer());
+      Var->setInitializer(CGM.EmitNullConstant(E->getType()));
+    }
+
     EmitScalarInit(E, M->getExtendingDecl(), RefTempDst, false);
 
     pushTemporaryCleanup(*this, M, E, Object);
@@ -343,7 +350,16 @@ LValue CodeGenFunction::EmitMaterializeTemporaryExpr(
 
   // Create and initialize the reference temporary.
   llvm::Value *Object = createReferenceTemporary(*this, M, E);
-  EmitAnyExprToMem(E, Object, Qualifiers(), /*IsInit*/true);
+  if (llvm::GlobalVariable *Var = dyn_cast<llvm::GlobalVariable>(Object)) {
+    // If the temporary is a global and has a constant initializer, we may
+    // have already initialized it.
+    if (!Var->hasInitializer()) {
+      Var->setInitializer(CGM.EmitNullConstant(E->getType()));
+      EmitAnyExprToMem(E, Object, Qualifiers(), /*IsInit*/true);
+    }
+  } else {
+    EmitAnyExprToMem(E, Object, Qualifiers(), /*IsInit*/true);
+  }
   pushTemporaryCleanup(*this, M, E, Object);
 
   // Perform derived-to-base casts and/or field accesses, to get from the
@@ -805,8 +821,6 @@ LValue CodeGenFunction::EmitLValue(const Expr *E) {
     return EmitLValue(cleanups->getSubExpr());
   }
 
-  case Expr::CXXScalarValueInitExprClass:
-    return EmitNullInitializationLValue(cast<CXXScalarValueInitExpr>(E));
   case Expr::CXXDefaultArgExprClass:
     return EmitLValue(cast<CXXDefaultArgExpr>(E)->getExpr());
   case Expr::CXXDefaultInitExprClass: {
@@ -2318,7 +2332,7 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
 
 static
 llvm::Constant *GenerateConstantVector(CGBuilderTy &Builder,
-                                       SmallVector<unsigned, 4> &Elts) {
+                                       SmallVectorImpl<unsigned> &Elts) {
   SmallVector<llvm::Constant*, 4> CElts;
   for (unsigned i = 0, e = Elts.size(); i != e; ++i)
     CElts.push_back(Builder.getInt32(Elts[i]));
@@ -2660,26 +2674,6 @@ EmitConditionalOperatorLValue(const AbstractConditionalOperator *expr) {
 LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
   switch (E->getCastKind()) {
   case CK_ToVoid:
-    return EmitUnsupportedLValue(E, "unexpected cast lvalue");
-
-  case CK_Dependent:
-    llvm_unreachable("dependent cast kind in IR gen!");
-
-  case CK_BuiltinFnToFnPtr:
-    llvm_unreachable("builtin functions are handled elsewhere");
-
-  // These two casts are currently treated as no-ops, although they could
-  // potentially be real operations depending on the target's ABI.
-  case CK_NonAtomicToAtomic:
-  case CK_AtomicToNonAtomic:
-
-  case CK_NoOp:
-  case CK_LValueToRValue:
-    if (!E->getSubExpr()->Classify(getContext()).isPRValue() 
-        || E->getType()->isRecordType())
-      return EmitLValue(E->getSubExpr());
-    // Fall through to synthesize a temporary.
-
   case CK_BitCast:
   case CK_ArrayToPointerDecay:
   case CK_FunctionToPointerDecay:
@@ -2714,15 +2708,19 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
   case CK_ARCConsumeObject:
   case CK_ARCReclaimReturnedObject:
   case CK_ARCExtendBlockObject: 
-  case CK_CopyAndAutoreleaseBlockObject: {
-    // These casts only produce lvalues when we're binding a reference to a 
-    // temporary realized from a (converted) pure rvalue. Emit the expression
-    // as a value, copy it into a temporary, and return an lvalue referring to
-    // that temporary.
-    llvm::Value *V = CreateMemTemp(E->getType(), "ref.temp");
-    EmitAnyExprToMem(E, V, E->getType().getQualifiers(), false);
-    return MakeAddrLValue(V, E->getType());
-  }
+  case CK_CopyAndAutoreleaseBlockObject:
+    return EmitUnsupportedLValue(E, "unexpected cast lvalue");
+
+  case CK_Dependent:
+    llvm_unreachable("dependent cast kind in IR gen!");
+
+  case CK_BuiltinFnToFnPtr:
+    llvm_unreachable("builtin functions are handled elsewhere");
+
+  // These are never l-values; just use the aggregate emission code.
+  case CK_NonAtomicToAtomic:
+  case CK_AtomicToNonAtomic:
+    return EmitAggExprToLValue(E);
 
   case CK_Dynamic: {
     LValue LV = EmitLValue(E->getSubExpr());
@@ -2735,6 +2733,8 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
   case CK_UserDefinedConversion:
   case CK_CPointerToObjCPointerCast:
   case CK_BlockPointerToObjCPointerCast:
+  case CK_NoOp:
+  case CK_LValueToRValue:
     return EmitLValue(E->getSubExpr());
   
   case CK_UncheckedDerivedToBase:
@@ -2799,14 +2799,6 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
   }
   
   llvm_unreachable("Unhandled lvalue cast kind?");
-}
-
-LValue CodeGenFunction::EmitNullInitializationLValue(
-                                              const CXXScalarValueInitExpr *E) {
-  QualType Ty = E->getType();
-  LValue LV = MakeAddrLValue(CreateMemTemp(Ty), Ty);
-  EmitNullInitialization(LV.getAddress(), Ty);
-  return LV;
 }
 
 LValue CodeGenFunction::EmitOpaqueValueLValue(const OpaqueValueExpr *e) {

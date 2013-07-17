@@ -93,9 +93,6 @@ void Sema::ActOnForEachDeclStmt(DeclGroupPtrTy dg) {
     return;
   }
 
-  // suppress any potential 'unused variable' warning.
-  var->setUsed();
-
   // foreach variables are never actually initialized in the way that
   // the parser came up with.
   var->setInit(0);
@@ -1219,13 +1216,13 @@ namespace {
   // of the excluded constructs are used.
   class DeclExtractor : public EvaluatedExprVisitor<DeclExtractor> {
     llvm::SmallPtrSet<VarDecl*, 8> &Decls;
-    SmallVector<SourceRange, 10> &Ranges;
+    SmallVectorImpl<SourceRange> &Ranges;
     bool Simple;
   public:
     typedef EvaluatedExprVisitor<DeclExtractor> Inherited;
 
     DeclExtractor(Sema &S, llvm::SmallPtrSet<VarDecl*, 8> &Decls,
-                  SmallVector<SourceRange, 10> &Ranges) :
+                  SmallVectorImpl<SourceRange> &Ranges) :
         Inherited(S.Context),
         Decls(Decls),
         Ranges(Ranges),
@@ -1411,7 +1408,7 @@ namespace {
     // Load SourceRanges into diagnostic if there is room.
     // Otherwise, load the SourceRange of the conditional expression.
     if (Ranges.size() <= PartialDiagnostic::MaxArguments)
-      for (SmallVector<SourceRange, 10>::iterator I = Ranges.begin(),
+      for (SmallVectorImpl<SourceRange>::iterator I = Ranges.begin(),
                                                   E = Ranges.end();
            I != E; ++I)
         PDiag << *I;
@@ -1768,7 +1765,8 @@ Sema::ActOnCXXForRangeStmt(SourceLocation ForLoc,
 
   // Claim the type doesn't contain auto: we've already done the checking.
   DeclGroupPtrTy RangeGroup =
-    BuildDeclaratorGroup((Decl**)&RangeVar, 1, /*TypeMayContainAuto=*/false);
+      BuildDeclaratorGroup(llvm::MutableArrayRef<Decl *>((Decl **)&RangeVar, 1),
+                           /*TypeMayContainAuto=*/ false);
   StmtResult RangeDecl = ActOnDeclStmt(RangeGroup, RangeLoc, RangeLoc);
   if (RangeDecl.isInvalid())
     return StmtError();
@@ -2048,7 +2046,8 @@ Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation ColonLoc,
     Decl *BeginEndDecls[] = { BeginVar, EndVar };
     // Claim the type doesn't contain auto: we've already done the checking.
     DeclGroupPtrTy BeginEndGroup =
-      BuildDeclaratorGroup(BeginEndDecls, 2, /*TypeMayContainAuto=*/false);
+        BuildDeclaratorGroup(llvm::MutableArrayRef<Decl *>(BeginEndDecls, 2),
+                             /*TypeMayContainAuto=*/ false);
     BeginEndDecl = ActOnDeclStmt(BeginEndGroup, ColonLoc, ColonLoc);
 
     const QualType BeginRefNonRefType = BeginType.getNonReferenceType();
@@ -2711,11 +2710,10 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
       // If we have a related result type, we need to implicitly
       // convert back to the formal result type.  We can't pretend to
       // initialize the result again --- we might end double-retaining
-      // --- so instead we initialize a notional temporary; this can
-      // lead to less-than-great diagnostics, but this stage is much
-      // less likely to fail than the previous stage.
+      // --- so instead we initialize a notional temporary.
       if (!RelatedRetType.isNull()) {
-        Entity = InitializedEntity::InitializeTemporary(FnRetType);
+        Entity = InitializedEntity::InitializeRelatedResult(getCurMethodDecl(),
+                                                            FnRetType);
         Res = PerformCopyInitialization(Entity, ReturnLoc, RetValExp);
         if (Res.isInvalid()) {
           // FIXME: Clean up temporaries here anyway?

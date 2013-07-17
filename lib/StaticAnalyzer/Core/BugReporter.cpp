@@ -18,8 +18,10 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/ExprCXX.h"
 #include "clang/AST/ParentMap.h"
 #include "clang/AST/StmtObjC.h"
+#include "clang/AST/StmtCXX.h"
 #include "clang/Analysis/CFG.h"
 #include "clang/Analysis/ProgramPoint.h"
 #include "clang/Basic/SourceManager.h"
@@ -1590,8 +1592,8 @@ static const Stmt *getTerminatorCondition(const CFGBlock *B) {
   return S;
 }
 
-static const char *StrEnteringLoop = "Entering loop body";
-static const char *StrLoopBodyZero = "Loop body executed 0 times";
+static const char StrEnteringLoop[] = "Entering loop body";
+static const char StrLoopBodyZero[] = "Loop body executed 0 times";
 
 static bool
 GenerateAlternateExtensivePathDiagnostic(PathDiagnostic& PD,
@@ -1792,8 +1794,7 @@ GenerateAlternateExtensivePathDiagnostic(PathDiagnostic& PD,
               if (!IsInLoopBody) {
                 str = StrLoopBodyZero;
               }
-            }
-            else {
+            } else {
               str = StrEnteringLoop;
             }
 
@@ -1806,9 +1807,8 @@ GenerateAlternateExtensivePathDiagnostic(PathDiagnostic& PD,
                             PE->getLocation(), PDB.LC);
               PD.getActivePath().push_front(PE);
             }
-          }
-          else if (isa<BreakStmt>(Term) || isa<ContinueStmt>(Term) ||
-                   isa<GotoStmt>(Term)) {
+          } else if (isa<BreakStmt>(Term) || isa<ContinueStmt>(Term) ||
+                     isa<GotoStmt>(Term)) {
             PathDiagnosticLocation L(Term, SM, PDB.LC);
             addEdgeToPath(PD.getActivePath(), PrevLoc, L, PDB.LC);
           }
@@ -2741,7 +2741,7 @@ void BugReporter::FlushReports() {
   SmallVector<const BugType*, 16> bugTypes;
   for (BugTypesTy::iterator I=BugTypes.begin(), E=BugTypes.end(); I!=E; ++I)
     bugTypes.push_back(*I);
-  for (SmallVector<const BugType*, 16>::iterator
+  for (SmallVectorImpl<const BugType *>::iterator
          I = bugTypes.begin(), E = bugTypes.end(); I != E; ++I)
     const_cast<BugType*>(*I)->FlushReports(*this);
 

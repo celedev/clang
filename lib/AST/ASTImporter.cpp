@@ -400,6 +400,13 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
       return false;
     break;
   
+  case Type::Decayed:
+    if (!IsStructurallyEquivalent(Context,
+                                  cast<DecayedType>(T1)->getPointeeType(),
+                                  cast<DecayedType>(T2)->getPointeeType()))
+      return false;
+    break;
+
   case Type::Pointer:
     if (!IsStructurallyEquivalent(Context,
                                   cast<PointerType>(T1)->getPointeeType(),
@@ -4403,7 +4410,7 @@ Decl *ASTImporter::Import(Decl *FromD) {
   } else if (TypedefNameDecl *FromTypedef = dyn_cast<TypedefNameDecl>(FromD)) {
     // When we've finished transforming a typedef, see whether it was the
     // typedef for an anonymous tag.
-    for (SmallVector<TagDecl *, 4>::iterator
+    for (SmallVectorImpl<TagDecl *>::iterator
                FromTag = AnonTagsWithPendingTypedefs.begin(), 
             FromTagEnd = AnonTagsWithPendingTypedefs.end();
          FromTag != FromTagEnd; ++FromTag) {

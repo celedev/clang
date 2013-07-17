@@ -15,9 +15,9 @@
 #define CLANG_CODEGEN_CODEGENFUNCTION_H
 
 #include "CGBuilder.h"
-#include "CGCleanup.h"
 #include "CGDebugInfo.h"
 #include "CGValue.h"
+#include "EHScopeStack.h"
 #include "CodeGenModule.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/ExprCXX.h"
@@ -797,10 +797,6 @@ public:
 private:
   CGDebugInfo *DebugInfo;
   bool DisableDebugInfo;
-
-  /// If the current function returns 'this', use the field to keep track of
-  /// the callee that returns 'this'.
-  llvm::Value *CalleeWithThisReturn;
 
   /// DidCallStackSave - Whether llvm.stacksave has been called. Used to avoid
   /// calling llvm.stacksave for multiple VLAs in the same scope.
@@ -1991,7 +1987,6 @@ public:
   LValue EmitInitListLValue(const InitListExpr *E);
   LValue EmitConditionalOperatorLValue(const AbstractConditionalOperator *E);
   LValue EmitCastLValue(const CastExpr *E);
-  LValue EmitNullInitializationLValue(const CXXScalarValueInitExpr *E);
   LValue EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *E);
   LValue EmitOpaqueValueLValue(const OpaqueValueExpr *e);
 
@@ -2474,7 +2469,7 @@ private:
   /// Ty, into individual arguments on the provided vector \arg Args. See
   /// ABIArgInfo::Expand.
   void ExpandTypeToArgs(QualType Ty, RValue Src,
-                        SmallVector<llvm::Value*, 16> &Args,
+                        SmallVectorImpl<llvm::Value *> &Args,
                         llvm::FunctionType *IRFuncTy);
 
   llvm::Value* EmitAsmInput(const TargetInfo::ConstraintInfo &Info,
