@@ -86,6 +86,8 @@ static CXTypeKind GetTypeKind(QualType T) {
     TKCASE(FunctionProto);
     TKCASE(ConstantArray);
     TKCASE(Vector);
+    TKCASE(IncompleteArray);
+    TKCASE(VariableArray);
     default:
       return CXType_Unexposed;
   }
@@ -467,6 +469,8 @@ CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
     TKIND(FunctionProto);
     TKIND(ConstantArray);
     TKIND(Vector);
+    TKIND(IncompleteArray);
+    TKIND(VariableArray);
   }
 #undef TKIND
   return cxstring::createRef(s);
@@ -590,6 +594,12 @@ CXType clang_getElementType(CXType CT) {
     case Type::ConstantArray:
       ET = cast<ConstantArrayType> (TP)->getElementType();
       break;
+    case Type::IncompleteArray:
+      ET = cast<IncompleteArrayType> (TP)->getElementType();
+      break;
+    case Type::VariableArray:
+      ET = cast<VariableArrayType> (TP)->getElementType();
+      break;
     case Type::Vector:
       ET = cast<VectorType> (TP)->getElementType();
       break;
@@ -632,6 +642,12 @@ CXType clang_getArrayElementType(CXType CT) {
     switch (TP->getTypeClass()) {
     case Type::ConstantArray:
       ET = cast<ConstantArrayType> (TP)->getElementType();
+      break;
+    case Type::IncompleteArray:
+      ET = cast<IncompleteArrayType> (TP)->getElementType();
+      break;
+    case Type::VariableArray:
+      ET = cast<VariableArrayType> (TP)->getElementType();
       break;
     default:
       break;
