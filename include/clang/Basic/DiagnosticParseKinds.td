@@ -837,6 +837,12 @@ def err_omp_unknown_directive : Error <
   "expected an OpenMP directive">;
 def err_omp_unexpected_directive : Error <
   "unexpected OpenMP directive '#pragma omp %0'">;
+def err_omp_expected_punc : Error <
+  "expected ',' or ')' in %select{'#pragma omp %1'|'%1' clause}0">;
+def err_omp_unexpected_clause : Error <
+  "unexpected OpenMP clause '%0' in directive '#pragma omp %1'">;
+def err_omp_more_one_clause : Error <
+  "directive '#pragma omp %0' cannot contain more than one '%1' clause">;
 } // end of Parse Issue category.
 
 let CategoryName = "Modules Issue" in {

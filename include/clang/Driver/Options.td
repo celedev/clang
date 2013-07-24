@@ -112,10 +112,8 @@ def ccc_debug_Group : OptionGroup<"<clang debug/development internal options>">,
   Group<ccc_Group>, HelpText<"DEBUG/DEVELOPMENT OPTIONS">;
 
 class CCCDriverOpt : Group<ccc_driver_Group>, Flags<[DriverOption, HelpHidden]>;
-def ccc_cxx : Flag<["-"], "ccc-cxx">, CCCDriverOpt,
-  HelpText<"Act as a C++ driver">;
-def ccc_echo : Flag<["-"], "ccc-echo">, CCCDriverOpt,
-  HelpText<"Echo commands before running them">;
+def driver_mode : Joined<["--"], "driver-mode=">, CCCDriverOpt,
+  HelpText<"Set the driver mode to either 'gcc', 'g++' or 'cpp'">;
 def ccc_gcc_name : Separate<["-"], "ccc-gcc-name">, CCCDriverOpt,
   HelpText<"Name for native GCC compiler">,
   MetaVarName<"<gcc-path>">;
@@ -568,6 +566,8 @@ def fno_builtin_strcat : Flag<["-"], "fno-builtin-strcat">, Group<f_Group>;
 def fno_builtin_strcpy : Flag<["-"], "fno-builtin-strcpy">, Group<f_Group>;
 def fno_builtin : Flag<["-"], "fno-builtin">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Disable implicit builtin knowledge of functions">;
+def fno_math_builtin : Flag<["-"], "fno-math-builtin">, Group<f_Group>, Flags<[CC1Option]>,
+  HelpText<"Disable implicit builtin knowledge of math functions">;
 def fno_caret_diagnostics : Flag<["-"], "fno-caret-diagnostics">, Group<f_Group>,
  Flags<[CC1Option]>;
 def fno_color_diagnostics : Flag<["-"], "fno-color-diagnostics">, Group<f_Group>;
@@ -584,7 +584,7 @@ def fno_diagnostics_fixit_info : Flag<["-"], "fno-diagnostics-fixit-info">, Grou
 def fno_diagnostics_show_name : Flag<["-"], "fno-diagnostics-show-name">, Group<f_Group>;
 def fno_diagnostics_show_option : Flag<["-"], "fno-diagnostics-show-option">, Group<f_Group>;
 def fno_diagnostics_show_note_include_stack : Flag<["-"], "fno-diagnostics-show-note-include-stack">,
-    Flags<[CC1Option]>, Group<f_Group>, HelpText<"Display include stacks for diagnostic notes">;
+    Flags<[CC1Option]>, Group<f_Group>;
 def fno_dollars_in_identifiers : Flag<["-"], "fno-dollars-in-identifiers">, Group<f_Group>,
   HelpText<"Disallow '$' in identifiers">, Flags<[CC1Option]>;
 def fno_elide_constructors : Flag<["-"], "fno-elide-constructors">, Group<f_Group>,
@@ -1009,6 +1009,9 @@ def mxgot : Flag<["-"], "mxgot">, Group<m_Group>;
 def mno_xgot : Flag<["-"], "mno-xgot">, Group<m_Group>;
 def mldc1_sdc1 : Flag<["-"], "mldc1-sdc1">, Group<m_Group>;
 def mno_ldc1_sdc1 : Flag<["-"], "mno-ldc1-sdc1">, Group<m_Group>;
+def mcheck_zero_division : Flag<["-"], "mcheck-zero-division">, Group<m_Group>;
+def mno_check_zero_division : Flag<["-"], "mno-check-zero-division">,
+                              Group<m_Group>;
 def mdsp : Flag<["-"], "mdsp">, Group<m_Group>;
 def mno_dsp : Flag<["-"], "mno-dsp">, Group<m_Group>;
 def mdspr2 : Flag<["-"], "mdspr2">, Group<m_Group>;

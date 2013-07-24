@@ -1756,8 +1756,8 @@ def err_attribute_can_be_applied_only_to_symbol_declaration : Error<
 def err_attributes_are_not_compatible : Error<
   "%0 and %1 attributes are not compatible">;
 def err_attribute_wrong_number_arguments : Error<
-  "attribute %plural{0:takes no arguments|1:takes one argument|"
-  ":requires exactly %0 arguments}0">;
+  "%0 attribute %plural{0:takes no arguments|1:takes one argument|"
+  ":requires exactly %1 arguments}1">;
 def err_attribute_too_many_arguments : Error<
   "attribute takes no more than %0 argument%s0">;
 def err_suppress_autosynthesis : Error<
@@ -1787,8 +1787,9 @@ def err_alignas_mismatch : Error<
   "redeclaration has different alignment requirement (%1 vs %0)">;
 def err_alignas_underaligned : Error<
   "requested alignment is less than minimum alignment of %1 for type %0">;
-def err_attribute_first_argument_not_int_or_bool : Error<
-  "%0 attribute first argument must be of int or bool type">;
+def err_attribute_argument_n_type : Error<
+  "%0 attribute requires parameter %1 to be %select{int or bool|an integer "
+  "constant|a string|an identifier}2">;
 def err_attribute_argument_outof_range : Error<
   "init_priority attribute requires integer constant between "
   "101 and 65535 inclusive">;
@@ -1797,16 +1798,8 @@ def err_init_priority_object_attr : Error<
   "of objects of class type">;
 def err_attribute_argument_vec_type_hint : Error<
   "invalid attribute argument %0 - expecting a vector or vectorizable scalar type">;
-def err_attribute_argument_n_not_int : Error<
-  "'%0' attribute requires parameter %1 to be an integer constant">;
-def err_attribute_argument_n_not_string : Error<
-  "'%0' attribute requires parameter %1 to be a string">;
-def err_attribute_argument_n_not_identifier : Error<
-  "'%0' attribute requires parameter %1 to be an identifier">;
 def err_attribute_argument_out_of_bounds : Error<
   "'%0' attribute parameter %1 is out of bounds">;
-def err_attribute_requires_objc_interface : Error<
-  "attribute may only be applied to an Objective-C interface">;
 def err_attribute_uuid_malformed_guid : Error<
   "uuid attribute contains a malformed GUID">;
 def warn_nonnull_pointers_only : Warning<
@@ -1844,8 +1837,6 @@ def err_ext_vector_component_exceeds_length : Error<
   "vector component access exceeds type %0">;
 def err_ext_vector_component_name_illegal : Error<
   "illegal vector component name '%0'">;
-def err_attribute_address_space_not_int : Error<
-  "address space attribute requires an integer constant">;
 def err_attribute_address_space_negative : Error<
   "address space is negative">;
 def err_attribute_address_space_too_high : Error<
@@ -2006,7 +1997,7 @@ def warn_attribute_wrong_decl_type : Warning<
   "variables, functions and labels|fields and global variables|structs|"
   "variables, functions and tag types|thread-local variables|"
   "variables and fields|variables, data members and tag types|"
-  "types and namespaces}1">,
+  "types and namespaces|Objective-C interfaces}1">,
   InGroup<IgnoredAttributes>;
 def err_attribute_wrong_decl_type : Error<
   "%0 attribute only applies to %select{functions|unions|"
@@ -2016,15 +2007,10 @@ def err_attribute_wrong_decl_type : Error<
   "variables, functions and labels|fields and global variables|structs|"
   "variables, functions and tag types|thread-local variables|"
   "variables and fields|variables, data members and tag types|"
-  "types and namespaces}1">;
-def warn_function_attribute_wrong_type : Warning<
-  "'%0' only applies to function types; type here is %1">,
-  InGroup<IgnoredAttributes>;
-def warn_pointer_attribute_wrong_type : Warning<
-  "'%0' only applies to pointer types; type here is %1">,
-  InGroup<IgnoredAttributes>;
-def warn_objc_object_attribute_wrong_type : Warning<
-  "'%0' only applies to Objective-C object or block pointer types; type here is %1">,
+  "types and namespaces|Objective-C interfaces}1">;
+def warn_type_attribute_wrong_type : Warning<
+  "'%0' only applies to %select{function|pointer|"
+  "Objective-C object or block pointer}1 types; type here is %2">,
   InGroup<IgnoredAttributes>;
 def warn_attribute_requires_functions_or_static_globals : Warning<
   "%0 only applies to variables with static storage duration and functions">,
@@ -3400,6 +3386,10 @@ def note_unavailable_here : Note<
   "%select{unavailable|deleted|deprecated}1 here">;
 def note_implicitly_deleted : Note<
   "explicitly defaulted function was implicitly deleted here">;
+def note_inherited_deleted_here : Note<
+  "deleted constructor was inherited here">;
+def note_cannot_inherit : Note<
+  "constructor cannot be inherited">;
 def warn_not_enough_argument : Warning<
   "not enough variable arguments in %0 declaration to fit a sentinel">,
   InGroup<Sentinel>;
@@ -3420,7 +3410,7 @@ def err_redefinition : Error<"redefinition of %0">;
 def err_definition_of_implicitly_declared_member : Error<
   "definition of implicitly declared %select{default constructor|copy "
   "constructor|move constructor|copy assignment operator|move assignment "
-  "operator|destructor}1">;
+  "operator|destructor|function}1">;
 def err_definition_of_explicitly_defaulted_member : Error<
   "definition of explicitly defaulted %select{default constructor|copy "
   "constructor|move constructor|copy assignment operator|move assignment "
@@ -3629,6 +3619,8 @@ def warn_typecheck_zero_static_array_size : Warning<
 def err_array_size_non_int : Error<"size of array has non-integer type %0">;
 def err_init_element_not_constant : Error<
   "initializer element is not a compile-time constant">;
+def ext_aggregate_init_not_constant : Extension<
+  "initializer for aggregate is not a compile-time constant">, InGroup<C99>;
 def err_local_cant_init : Error<
   "'__local' variable cannot have an initializer">;
 def err_block_extern_cant_init : Error<
@@ -5616,6 +5608,10 @@ def warn_initializer_out_of_order : Warning<
   "%select{field|base class}0 %1 will be initialized after "
   "%select{field|base}2 %3">,
   InGroup<Reorder>, DefaultIgnore;
+def warn_abstract_vbase_init_ignored : Warning<
+  "initializer for virtual base class %0 of abstract class %1 "
+  "will never be used">,
+  InGroup<DiagGroup<"abstract-vbase-init">>, DefaultIgnore;
 
 def err_base_init_does_not_name_class : Error<
   "constructor initializer %0 does not name a class">;
@@ -5801,8 +5797,8 @@ def err_literal_operator_params : Error<
 def err_literal_operator_extern_c : Error<
   "literal operator must have C++ linkage">;
 def warn_user_literal_reserved : Warning<
-  "user-defined literal suffixes not starting with '_' are reserved; "
-  "no literal will invoke this operator">,
+  "user-defined literal suffixes not starting with '_' are reserved"
+  "%select{; no literal will invoke this operator|}0">,
   InGroup<UserDefinedLiterals>;
 
 // C++ conversion functions
@@ -6449,16 +6445,22 @@ def err_invalid_astype_of_different_size : Error<
   "invalid reinterpretation: sizes of %0 and %1 must match">;
 def err_static_kernel : Error<
   "kernel functions cannot be declared static">;
-def err_opencl_ptrptr_kernel_arg : Error<
-  "kernel argument cannot be declared as a pointer to a pointer">;
+def err_opencl_ptrptr_kernel_param : Error<
+  "kernel parameter cannot be declared as a pointer to a pointer">;
 def err_static_function_scope : Error<
   "variables in function scope cannot be declared static">;
 def err_opencl_bitfields : Error<
   "bitfields are not supported in OpenCL">;
 def err_opencl_vla : Error<
   "variable length arrays are not supported in OpenCL">;
-def err_event_t_kernel_arg : Error<
-  "the event_t type cannot be used to declare a kernel function argument">;
+def err_bad_kernel_param_type : Error<
+  "%0 cannot be used as the type of a kernel parameter">;
+def err_record_with_pointers_kernel_param : Error<
+  "%select{struct|union}0 kernel parameters may not contain pointers">;
+def note_within_field_of_type : Note<
+  "within field of type %0 declared here">;
+def note_illegal_field_declared_here : Note<
+  "field of illegal %select{type|pointer type}0 %1 declared here">;
 def err_event_t_global_var : Error<
   "the event_t type cannot be used to declare a program scope variable">;
 def err_event_t_struct_field : Error<
@@ -6483,13 +6485,23 @@ def err_omp_expected_var_arg_suggest : Error<
 def err_omp_global_var_arg : Error<
   "arguments of '#pragma omp %0' must have %select{global storage|static storage duration}1">;
 def err_omp_ref_type_arg : Error<
-  "arguments of '#pragma omp %0' cannot be of reference type">;
+  "arguments of '#pragma omp %0' cannot be of reference type %1">;
 def err_omp_var_scope : Error<
   "'#pragma omp %0' must appear in the scope of the %q1 variable declaration">;
 def err_omp_var_used : Error<
   "'#pragma omp %0' must precede all references to variable %q1">;
 def err_omp_var_thread_local : Error<
   "variable %0 cannot be threadprivate because it is thread-local">;
+def err_omp_private_incomplete_type : Error<
+  "a private variable with incomplete type %0">;
+def err_omp_unexpected_clause_value : Error <
+  "expected %0 in OpenMP clause '%1'">;
+def err_omp_expected_var_name : Error <
+  "expected variable name">;
+def err_omp_required_method : Error <
+  "%0 variable must have an accessible, unambiguous %select{default constructor|copy constructor|copy assignment operator|'%2'|destructor}1">;
+def err_omp_clause_ref_type_arg : Error<
+  "arguments of OpenMP clause '%0' cannot be of reference type %1">;
 def err_omp_threadprivate_incomplete_type : Error<
   "threadprivate variable with incomplete type %0">;
 } // end of OpenMP category

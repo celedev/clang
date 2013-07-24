@@ -38,6 +38,12 @@
 
 using namespace clang;
 
+enum TypeDiagSelector {
+  TDS_Function,
+  TDS_Pointer,
+  TDS_ObjCObjOrBlock
+};
+
 /// isOmittedBlockReturnType - Return true if this declarator is missing a
 /// return type because this is a omitted return type on a block literal.
 static bool isOmittedBlockReturnType(const Declarator &D) {
@@ -59,23 +65,15 @@ static bool isOmittedBlockReturnType(const Declarator &D) {
 /// doesn't apply to the given type.
 static void diagnoseBadTypeAttribute(Sema &S, const AttributeList &attr,
                                      QualType type) {
-  bool useExpansionLoc = false;
-
-  unsigned diagID = 0;
+  TypeDiagSelector WhichType;
+  bool useExpansionLoc = true;
   switch (attr.getKind()) {
-  case AttributeList::AT_ObjCGC:
-    diagID = diag::warn_pointer_attribute_wrong_type;
-    useExpansionLoc = true;
-    break;
-
-  case AttributeList::AT_ObjCOwnership:
-    diagID = diag::warn_objc_object_attribute_wrong_type;
-    useExpansionLoc = true;
-    break;
-
+  case AttributeList::AT_ObjCGC:        WhichType = TDS_Pointer; break;
+  case AttributeList::AT_ObjCOwnership: WhichType = TDS_ObjCObjOrBlock; break;
   default:
     // Assume everything else was a function attribute.
-    diagID = diag::warn_function_attribute_wrong_type;
+    WhichType = TDS_Function;
+    useExpansionLoc = false;
     break;
   }
 
@@ -91,7 +89,8 @@ static void diagnoseBadTypeAttribute(Sema &S, const AttributeList &attr,
     }
   }
 
-  S.Diag(loc, diagID) << name << type;
+  S.Diag(loc, diag::warn_type_attribute_wrong_type) << name << WhichType
+    << type;
 }
 
 // objc_gc applies to Objective-C pointers or, otherwise, to the
@@ -547,12 +546,7 @@ distributeFunctionTypeAttrToInnermost(TypeProcessingState &state,
     return true;
   }
 
-  if (handleFunctionTypeAttr(state, attr, declSpecType)) {
-    spliceAttrOutOfList(attr, attrList);
-    return true;
-  }
-
-  return false;
+  return handleFunctionTypeAttr(state, attr, declSpecType);
 }
 
 /// A function type attribute was written in the decl spec.  Try to
@@ -3346,6 +3340,7 @@ static AttributeList::Kind getAttrListKind(AttributedType::Kind kind) {
   case AttributedType::attr_pascal:
     return AttributeList::AT_Pascal;
   case AttributedType::attr_pcs:
+  case AttributedType::attr_pcs_vfp:
     return AttributeList::AT_Pcs;
   case AttributedType::attr_pnaclcall:
     return AttributeList::AT_PnaclCall;
@@ -3837,7 +3832,8 @@ static void HandleAddressSpaceTypeAttribute(QualType &Type,
 
   // Check the attribute arguments.
   if (Attr.getNumArgs() != 1) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 1;
+    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+      << Attr.getName() << 1;
     Attr.setInvalid();
     return;
   }
@@ -3845,8 +3841,8 @@ static void HandleAddressSpaceTypeAttribute(QualType &Type,
   llvm::APSInt addrSpace(32);
   if (ASArgExpr->isTypeDependent() || ASArgExpr->isValueDependent() ||
       !ASArgExpr->isIntegerConstantExpr(addrSpace, S.Context)) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_address_space_not_int)
-      << ASArgExpr->getSourceRange();
+    S.Diag(Attr.getLoc(), diag::err_attribute_argument_not_int)
+      << Attr.getName()->getName() << ASArgExpr->getSourceRange();
     Attr.setInvalid();
     return;
   }
@@ -3941,8 +3937,8 @@ static bool handleObjCOwnershipTypeAttr(TypeProcessingState &state,
     AttrLoc = S.getSourceManager().getImmediateExpansionRange(AttrLoc).first;
 
   if (!attr.getParameterName()) {
-    S.Diag(AttrLoc, diag::err_attribute_argument_n_not_string)
-      << "objc_ownership" << 1;
+    S.Diag(AttrLoc, diag::err_attribute_argument_n_type)
+      << attr.getName() << 1 << 2 /*string*/;
     attr.setInvalid();
     return true;
   }
@@ -4004,8 +4000,8 @@ static bool handleObjCOwnershipTypeAttr(TypeProcessingState &state,
     case Qualifiers::OCL_Weak: name = "__weak"; break;
     case Qualifiers::OCL_Autoreleasing: name = "__autoreleasing"; break;
     }
-    S.Diag(AttrLoc, diag::warn_objc_object_attribute_wrong_type)
-      << name << type;
+    S.Diag(AttrLoc, diag::warn_type_attribute_wrong_type) << name
+      << TDS_ObjCObjOrBlock << type;
   }
 
   QualType origType = type;
@@ -4077,14 +4073,15 @@ static bool handleObjCGCTypeAttr(TypeProcessingState &state,
 
   // Check the attribute arguments.
   if (!attr.getParameterName()) {
-    S.Diag(attr.getLoc(), diag::err_attribute_argument_n_not_string)
-      << "objc_gc" << 1;
+    S.Diag(attr.getLoc(), diag::err_attribute_argument_n_type)
+      << attr.getName() << 1 << 2 /*string*/;
     attr.setInvalid();
     return true;
   }
   Qualifiers::GC GCAttr;
   if (attr.getNumArgs() != 0) {
-    S.Diag(attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 1;
+    S.Diag(attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+      << attr.getName() << 1;
     attr.setInvalid();
     return true;
   }
@@ -4303,6 +4300,36 @@ static bool handleMSPointerTypeQualifierAttr(TypeProcessingState &State,
   return false;
 }
 
+static AttributedType::Kind getCCTypeAttrKind(AttributeList &Attr) {
+  assert(!Attr.isInvalid());
+  switch (Attr.getKind()) {
+  default:
+    llvm_unreachable("not a calling convention attribute");
+  case AttributeList::AT_CDecl:
+    return AttributedType::attr_cdecl;
+  case AttributeList::AT_FastCall:
+    return AttributedType::attr_fastcall;
+  case AttributeList::AT_StdCall:
+    return AttributedType::attr_stdcall;
+  case AttributeList::AT_ThisCall:
+    return AttributedType::attr_thiscall;
+  case AttributeList::AT_Pascal:
+    return AttributedType::attr_pascal;
+  case AttributeList::AT_Pcs: {
+    // We know attr is valid so it can only have one of two strings args.
+    StringLiteral *Str = cast<StringLiteral>(Attr.getArg(0));
+    return llvm::StringSwitch<AttributedType::Kind>(Str->getString())
+        .Case("aapcs", AttributedType::attr_pcs)
+        .Case("aapcs-vfp", AttributedType::attr_pcs_vfp);
+  }
+  case AttributeList::AT_PnaclCall:
+    return AttributedType::attr_pnaclcall;
+  case AttributeList::AT_IntelOclBicc:
+    return AttributedType::attr_inteloclbicc;
+  }
+  llvm_unreachable("unexpected attribute kind!");
+}
+
 /// Process an individual function attribute.  Returns true to
 /// indicate that the attribute was handled, false if it wasn't.
 static bool handleFunctionTypeAttr(TypeProcessingState &state,
@@ -4422,8 +4449,13 @@ static bool handleFunctionTypeAttr(TypeProcessingState &state,
     }
   }
 
+  // Modify the CC from the wrapped function type, wrap it all back, and then
+  // wrap the whole thing in an AttributedType as written.  The modified type
+  // might have a different CC if we ignored the attribute.
   FunctionType::ExtInfo EI = unwrapped.get()->getExtInfo().withCallingConv(CC);
-  type = unwrapped.wrap(S, S.Context.adjustFunctionType(unwrapped.get(), EI));
+  QualType Equivalent =
+      unwrapped.wrap(S, S.Context.adjustFunctionType(unwrapped.get(), EI));
+  type = S.Context.getAttributedType(getCCTypeAttrKind(attr), type, Equivalent);
   return true;
 }
 
@@ -4433,7 +4465,8 @@ static void HandleOpenCLImageAccessAttribute(QualType& CurType,
                                              Sema &S) {
   // Check the attribute arguments.
   if (Attr.getNumArgs() != 1) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 1;
+    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+      << Attr.getName() << 1;
     Attr.setInvalid();
     return;
   }
@@ -4473,7 +4506,8 @@ static void HandleVectorSizeAttr(QualType& CurType, const AttributeList &Attr,
                                  Sema &S) {
   // Check the attribute arguments.
   if (Attr.getNumArgs() != 1) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 1;
+    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+      << Attr.getName() << 1;
     Attr.setInvalid();
     return;
   }
@@ -4539,7 +4573,8 @@ static void HandleExtVectorTypeAttr(QualType &CurType,
   } else {
     // check the attribute arguments.
     if (Attr.getNumArgs() != 1) {
-      S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 1;
+      S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+        << Attr.getName() << 1;
       return;
     }
     sizeExpr = Attr.getArg(0);
@@ -4564,7 +4599,8 @@ static void HandleNeonVectorTypeAttr(QualType& CurType,
                                      const char *AttrName) {
   // Check the attribute arguments.
   if (Attr.getNumArgs() != 1) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 1;
+    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+      << Attr.getName() << 1;
     Attr.setInvalid();
     return;
   }

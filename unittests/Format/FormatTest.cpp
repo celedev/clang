@@ -2981,27 +2981,34 @@ TEST_F(FormatTest, AlwaysBreakBeforeMultilineStrings) {
   NoBreak.AlwaysBreakBeforeMultilineStrings = false;
   FormatStyle Break = getLLVMStyle();
   Break.AlwaysBreakBeforeMultilineStrings = true;
-  EXPECT_EQ("aaaa = \"bbbb\"\n"
-            "       \"cccc\";",
-            format("aaaa=\"bbbb\" \"cccc\";", NoBreak));
-  EXPECT_EQ("aaaa =\n"
-            "    \"bbbb\"\n"
-            "    \"cccc\";",
-            format("aaaa=\"bbbb\" \"cccc\";", Break));
-  EXPECT_EQ("aaaa(\"bbbb\"\n"
-            "     \"cccc\");",
-            format("aaaa(\"bbbb\" \"cccc\");", NoBreak));
-  EXPECT_EQ("aaaa(\n"
-            "    \"bbbb\"\n"
-            "    \"cccc\");",
-            format("aaaa(\"bbbb\" \"cccc\");", Break));
-  EXPECT_EQ("aaaa(qqq, \"bbbb\"\n"
-            "          \"cccc\");",
-            format("aaaa(qqq, \"bbbb\" \"cccc\");", NoBreak));
-  EXPECT_EQ("aaaa(qqq,\n"
-            "     \"bbbb\"\n"
-            "     \"cccc\");",
-            format("aaaa(qqq, \"bbbb\" \"cccc\");", Break));
+  verifyFormat("aaaa = \"bbbb\"\n"
+               "       \"cccc\";",
+               NoBreak);
+  verifyFormat("aaaa =\n"
+               "    \"bbbb\"\n"
+               "    \"cccc\";",
+               Break);
+  verifyFormat("aaaa(\"bbbb\"\n"
+               "     \"cccc\");",
+               NoBreak);
+  verifyFormat("aaaa(\n"
+               "    \"bbbb\"\n"
+               "    \"cccc\");",
+               Break);
+  verifyFormat("aaaa(qqq, \"bbbb\"\n"
+               "          \"cccc\");",
+               NoBreak);
+  verifyFormat("aaaa(qqq,\n"
+               "     \"bbbb\"\n"
+               "     \"cccc\");",
+               Break);
+
+  // Don't break if there is no column gain.
+  verifyFormat("f(\"aaaa\"\n"
+               "  \"bbbb\");",
+               Break);
+
+  // Treat literals with escaped newlines like multi-line string literals.
   EXPECT_EQ("x = \"a\\\n"
             "b\\\n"
             "c\";",
@@ -3328,6 +3335,10 @@ TEST_F(FormatTest, UnderstandsPointersToMembers) {
                "  ((*a).*f)();\n"
                "  a.*x;\n"
                "}");
+  verifyFormat("void f() {\n"
+               "  (a->*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)(\n"
+               "      aaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb);\n"
+               "}");
   FormatStyle Style = getLLVMStyle();
   Style.PointerBindsToType = true;
   verifyFormat("typedef bool* (Class::*Member)() const;", Style);
@@ -3539,6 +3550,10 @@ TEST_F(FormatTest, UnderstandsUsesOfStarAndAmp) {
   verifyFormat("delete *x;", PointerLeft);
 }
 
+TEST_F(FormatTest, UnderstandsAttributes) {
+  verifyFormat("SomeType s __attribute__((unused)) (InitValue);");
+}
+
 TEST_F(FormatTest, UnderstandsEllipsis) {
   verifyFormat("int printf(const char *fmt, ...);");
   verifyFormat("template <class... Ts> void Foo(Ts... ts) { Foo(ts...); }");
@@ -3621,6 +3636,11 @@ TEST_F(FormatTest, FormatsCasts) {
   verifyFormat("my_int a = (my_int) ~0;");
   verifyFormat("my_int a = (my_int)++ a;");
   verifyFormat("my_int a = (my_int) + 2;");
+
+  // Don't break after a cast's
+  verifyFormat("int aaaaaaaaaaaaaaaaaaaaaaaaaaa =\n"
+               "    (aaaaaaaaaaaaaaaaaaaaaaaaaa *)(aaaaaaaaaaaaaaaaaaaaaa +\n"
+               "                                   bbbbbbbbbbbbbbbbbbbbbb);");
 
   // These are not casts.
   verifyFormat("void f(int *) {}");

@@ -85,9 +85,10 @@ static CXTypeKind GetTypeKind(QualType T) {
     TKCASE(FunctionNoProto);
     TKCASE(FunctionProto);
     TKCASE(ConstantArray);
-    TKCASE(Vector);
     TKCASE(IncompleteArray);
     TKCASE(VariableArray);
+    TKCASE(DependentSizedArray);
+    TKCASE(Vector);
     default:
       return CXType_Unexposed;
   }
@@ -468,9 +469,10 @@ CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
     TKIND(FunctionNoProto);
     TKIND(FunctionProto);
     TKIND(ConstantArray);
-    TKIND(Vector);
     TKIND(IncompleteArray);
     TKIND(VariableArray);
+    TKIND(DependentSizedArray);
+    TKIND(Vector);
   }
 #undef TKIND
   return cxstring::createRef(s);
@@ -600,6 +602,9 @@ CXType clang_getElementType(CXType CT) {
     case Type::VariableArray:
       ET = cast<VariableArrayType> (TP)->getElementType();
       break;
+    case Type::DependentSizedArray:
+      ET = cast<DependentSizedArrayType> (TP)->getElementType();
+      break;
     case Type::Vector:
       ET = cast<VectorType> (TP)->getElementType();
       break;
@@ -648,6 +653,9 @@ CXType clang_getArrayElementType(CXType CT) {
       break;
     case Type::VariableArray:
       ET = cast<VariableArrayType> (TP)->getElementType();
+      break;
+    case Type::DependentSizedArray:
+      ET = cast<DependentSizedArrayType> (TP)->getElementType();
       break;
     default:
       break;

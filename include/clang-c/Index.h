@@ -2062,7 +2062,11 @@ enum CXCursorKind {
    */
   CXCursor_DeclStmt                      = 231,
 
-  CXCursor_LastStmt                      = CXCursor_DeclStmt,
+  /** \brief OpenMP parallel directive.
+   */
+  CXCursor_OMPParallelDirective          = 232,
+
+  CXCursor_LastStmt                      = CXCursor_OMPParallelDirective,
 
   /**
    * \brief Cursor that represents the translation unit itself.
@@ -2668,7 +2672,8 @@ enum CXTypeKind {
   CXType_ConstantArray = 112,
   CXType_Vector = 113,
   CXType_IncompleteArray = 114,
-  CXType_VariableArray = 115
+  CXType_VariableArray = 115,
+  CXType_DependentSizedArray = 116
 };
 
 /**

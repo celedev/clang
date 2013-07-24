@@ -963,18 +963,12 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) {
     } else if (Current->Previous->ClosesTemplateDeclaration &&
                Style.AlwaysBreakTemplateDeclarations) {
       Current->MustBreakBefore = true;
-    } else if (Style.AlwaysBreakBeforeMultilineStrings &&
-               Current->is(tok::string_literal) &&
-               Current->Previous->isNot(tok::lessless) &&
-               Current->Previous->Type != TT_InlineASMColon &&
-               ((Current->getNextNonComment() &&
-                 Current->getNextNonComment()->is(tok::string_literal)) ||
-                (Current->TokenText.find("\\\n") != StringRef::npos))) {
-      Current->MustBreakBefore = true;
     }
     Current->CanBreakBefore =
         Current->MustBreakBefore || canBreakBefore(Line, *Current);
-    if (Current->MustBreakBefore)
+    if (Current->MustBreakBefore ||
+        (Current->is(tok::string_literal) &&
+         Current->TokenText.find("\\\n") != StringRef::npos))
       Current->TotalLength = Current->Previous->TotalLength + Style.ColumnLimit;
     else
       Current->TotalLength = Current->Previous->TotalLength +
@@ -1157,6 +1151,10 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
   if (Left.is(tok::l_paren))
     return false;
   if (Right.is(tok::l_paren)) {
+    if (Left.is(tok::r_paren) && Left.MatchingParen &&
+        Left.MatchingParen->Previous &&
+        Left.MatchingParen->Previous->is(tok::kw___attribute))
+      return true;
     return Line.Type == LT_ObjCDecl ||
            Left.isOneOf(tok::kw_if, tok::kw_for, tok::kw_while, tok::kw_switch,
                         tok::kw_return, tok::kw_catch, tok::kw_new,
@@ -1269,7 +1267,7 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
         Left.Previous->is(tok::kw___attribute))
       return false;
     if (Left.is(tok::l_paren) && (Left.Previous->Type == TT_BinaryOperator ||
-                                  Left.Previous->is(tok::r_paren)))
+                                  Left.Previous->Type == TT_CastRParen))
       return false;
   }
 
