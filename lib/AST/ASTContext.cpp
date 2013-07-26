@@ -4687,42 +4687,47 @@ std::string charUnitsToString(const CharUnits &CU) {
 
 /// getObjCEncodingForBlock - Return the encoded type for this block
 /// declaration.
-std::string ASTContext::getObjCEncodingForBlock(const BlockExpr *Expr) const {
+std::string ASTContext::getObjCEncodingForBlock(const BlockExpr *Expr,
+                                                unsigned EncodeOptionsMask,
+                                                bool WithOffsets) const {
   std::string S;
 
   const BlockDecl *Decl = Expr->getBlockDecl();
   QualType BlockTy =
       Expr->getType()->getAs<BlockPointerType>()->getPointeeType();
-  // Encode result type.
+  
   if (getLangOpts().EncodeExtendedBlockSig)
-    getObjCEncodingForMethodParameter(Decl::OBJC_TQ_None,
-                            BlockTy->getAs<FunctionType>()->getResultType(),
-                            S, true /*Extended*/);
-  else
-    getObjCEncodingForType(BlockTy->getAs<FunctionType>()->getResultType(),
-                           S);
-  // Compute size of all parameters.
-  // Start with computing size of a pointer in number of bytes.
-  // FIXME: There might(should) be a better way of doing this computation!
-  SourceLocation Loc;
+    EncodeOptionsMask |= (ObjcEncodeBlockParameters | ObjcEncodeClassNamesFlag);
+  
+  // Encode result type.
+  getObjCEncodingForType(BlockTy->getAs<FunctionType>()->getResultType(), S, 0, EncodeOptionsMask);  
   CharUnits PtrSize = getTypeSizeInChars(VoidPtrTy);
-  CharUnits ParmOffset = PtrSize;
-  for (BlockDecl::param_const_iterator PI = Decl->param_begin(),
-       E = Decl->param_end(); PI != E; ++PI) {
-    QualType PType = (*PI)->getType();
-    CharUnits sz = getObjCEncodingTypeSize(PType);
-    if (sz.isZero())
-      continue;
-    assert (sz.isPositive() && "BlockExpr - Incomplete param type");
-    ParmOffset += sz;
+  if (WithOffsets) {
+    // Compute size of all parameters.
+    // Start with computing size of a pointer in number of bytes.
+    // FIXME: There might(should) be a better way of doing this computation!
+    SourceLocation Loc;
+    CharUnits ParmOffset = PtrSize;
+    for (BlockDecl::param_const_iterator PI = Decl->param_begin(),
+         E = Decl->param_end(); PI != E; ++PI) {
+      QualType PType = (*PI)->getType();
+      CharUnits sz = getObjCEncodingTypeSize(PType);
+      if (sz.isZero())
+        continue;
+      assert (sz.isPositive() && "BlockExpr - Incomplete param type");
+      ParmOffset += sz;
+    }
+    // Size of the argument frame
+    S += charUnitsToString(ParmOffset);
+    // Block pointer and offset.
+    S += "@?0";
   }
-  // Size of the argument frame
-  S += charUnitsToString(ParmOffset);
-  // Block pointer and offset.
-  S += "@?0";
+  else {
+    S += "@?";
+  }
   
   // Argument types.
-  ParmOffset = PtrSize;
+  CharUnits ParmOffset = PtrSize;
   for (BlockDecl::param_const_iterator PI = Decl->param_begin(), E =
        Decl->param_end(); PI != E; ++PI) {
     ParmVarDecl *PVDecl = *PI;
@@ -4735,37 +4740,39 @@ std::string ASTContext::getObjCEncodingForBlock(const BlockExpr *Expr) const {
         PType = PVDecl->getType();
     } else if (PType->isFunctionType())
       PType = PVDecl->getType();
-    if (getLangOpts().EncodeExtendedBlockSig)
-      getObjCEncodingForMethodParameter(Decl::OBJC_TQ_None, PType,
-                                      S, true /*Extended*/);
-    else
-      getObjCEncodingForType(PType, S);
-    S += charUnitsToString(ParmOffset);
-    ParmOffset += getObjCEncodingTypeSize(PType);
+    getObjCEncodingForType(PType, S, 0, EncodeOptionsMask);
+    if (WithOffsets) {
+      S += charUnitsToString(ParmOffset);
+      ParmOffset += getObjCEncodingTypeSize(PType);
+    }
   }
 
   return S;
 }
 
 bool ASTContext::getObjCEncodingForFunctionDecl(const FunctionDecl *Decl,
-                                                std::string& S) {
+                                                std::string& S,
+                                                unsigned EncodeOptionsMask,
+                                                bool WithOffsets) {
   // Encode result type.
-  getObjCEncodingForType(Decl->getResultType(), S);
+  getObjCEncodingForType(Decl->getResultType(), S, 0, EncodeOptionsMask);
   CharUnits ParmOffset;
-  // Compute size of all parameters.
-  for (FunctionDecl::param_const_iterator PI = Decl->param_begin(),
-       E = Decl->param_end(); PI != E; ++PI) {
-    QualType PType = (*PI)->getType();
-    CharUnits sz = getObjCEncodingTypeSize(PType);
-    if (sz.isZero())
-      continue;
- 
-    assert (sz.isPositive() && 
-        "getObjCEncodingForFunctionDecl - Incomplete param type");
-    ParmOffset += sz;
+  if (WithOffsets) {
+    // Compute size of all parameters.
+    for (FunctionDecl::param_const_iterator PI = Decl->param_begin(),
+         E = Decl->param_end(); PI != E; ++PI) {
+      QualType PType = (*PI)->getType();
+      CharUnits sz = getObjCEncodingTypeSize(PType);
+      if (sz.isZero())
+        continue;
+      
+      assert (sz.isPositive() &&
+              "getObjCEncodingForFunctionDecl - Incomplete param type");
+      ParmOffset += sz;
+    }
+    S += charUnitsToString(ParmOffset);
+    ParmOffset = CharUnits::Zero();
   }
-  S += charUnitsToString(ParmOffset);
-  ParmOffset = CharUnits::Zero();
 
   // Argument types.
   for (FunctionDecl::param_const_iterator PI = Decl->param_begin(),
@@ -4780,9 +4787,11 @@ bool ASTContext::getObjCEncodingForFunctionDecl(const FunctionDecl *Decl,
         PType = PVDecl->getType();
     } else if (PType->isFunctionType())
       PType = PVDecl->getType();
-    getObjCEncodingForType(PType, S);
-    S += charUnitsToString(ParmOffset);
-    ParmOffset += getObjCEncodingTypeSize(PType);
+    getObjCEncodingForType(PType, S, 0, EncodeOptionsMask);
+    if (WithOffsets) {
+      S += charUnitsToString(ParmOffset);
+      ParmOffset += getObjCEncodingTypeSize(PType);
+    }
   }
   
   return false;
@@ -4793,52 +4802,56 @@ bool ASTContext::getObjCEncodingForFunctionDecl(const FunctionDecl *Decl,
 /// block object types.
 void ASTContext::getObjCEncodingForMethodParameter(Decl::ObjCDeclQualifier QT,
                                                    QualType T, std::string& S,
-                                                   bool Extended) const {
+                                                   unsigned EncodeOptionsMask) const {
   // Encode type qualifer, 'in', 'inout', etc. for the parameter.
   getObjCEncodingForTypeQualifier(QT, S);
   // Encode parameter type.
   getObjCEncodingForTypeImpl(T, S, true, true, 0,
                              true     /*OutermostType*/,
                              false    /*EncodingProperty*/, 
-                             false    /*StructField*/, 
-                             Extended /*EncodeBlockParameters*/, 
-                             Extended /*EncodeClassNames*/);
+                             false    /*StructField*/,
+                             EncodeOptionsMask);
 }
 
 /// getObjCEncodingForMethodDecl - Return the encoded type for this method
 /// declaration.
 bool ASTContext::getObjCEncodingForMethodDecl(const ObjCMethodDecl *Decl,
                                               std::string& S, 
-                                              bool Extended) const {
+                                              unsigned EncodeOptionsMask,
+                                              bool WithOffsets) const {
   // FIXME: This is not very efficient.
   // Encode return type.
-  getObjCEncodingForMethodParameter(Decl->getObjCDeclQualifier(), 
-                                    Decl->getResultType(), S, Extended);
-  // Compute size of all parameters.
-  // Start with computing size of a pointer in number of bytes.
-  // FIXME: There might(should) be a better way of doing this computation!
-  SourceLocation Loc;
+  getObjCEncodingForMethodParameter(Decl->getObjCDeclQualifier(),
+                                    Decl->getResultType(), S, EncodeOptionsMask);
   CharUnits PtrSize = getTypeSizeInChars(VoidPtrTy);
-  // The first two arguments (self and _cmd) are pointers; account for
-  // their size.
-  CharUnits ParmOffset = 2 * PtrSize;
-  for (ObjCMethodDecl::param_const_iterator PI = Decl->param_begin(),
-       E = Decl->sel_param_end(); PI != E; ++PI) {
-    QualType PType = (*PI)->getType();
-    CharUnits sz = getObjCEncodingTypeSize(PType);
-    if (sz.isZero())
-      continue;
- 
-    assert (sz.isPositive() && 
-        "getObjCEncodingForMethodDecl - Incomplete param type");
-    ParmOffset += sz;
+  if (WithOffsets) {
+    // Compute size of all parameters.
+    // Start with computing size of a pointer in number of bytes.
+    // FIXME: There might(should) be a better way of doing this computation!
+    // The first two arguments (self and _cmd) are pointers; account for
+    // their size.
+    CharUnits ParmOffset = 2 * PtrSize;
+    for (ObjCMethodDecl::param_const_iterator PI = Decl->param_begin(),
+         E = Decl->sel_param_end(); PI != E; ++PI) {
+      QualType PType = (*PI)->getType();
+      CharUnits sz = getObjCEncodingTypeSize(PType);
+      if (sz.isZero())
+        continue;
+      
+      assert (sz.isPositive() &&
+              "getObjCEncodingForMethodDecl - Incomplete param type");
+      ParmOffset += sz;
+    }
+    S += charUnitsToString(ParmOffset);
+    S += "@0:";
+    S += charUnitsToString(PtrSize);
   }
-  S += charUnitsToString(ParmOffset);
-  S += "@0:";
-  S += charUnitsToString(PtrSize);
+  else {
+    S += "@:";
+  }
 
   // Argument types.
-  ParmOffset = 2 * PtrSize;
+  CharUnits ParmOffset = 2 * PtrSize;
   for (ObjCMethodDecl::param_const_iterator PI = Decl->param_begin(),
        E = Decl->sel_param_end(); PI != E; ++PI) {
     const ParmVarDecl *PVDecl = *PI;
@@ -4852,9 +4865,11 @@ bool ASTContext::getObjCEncodingForMethodDecl(const ObjCMethodDecl *Decl,
     } else if (PType->isFunctionType())
       PType = PVDecl->getType();
     getObjCEncodingForMethodParameter(PVDecl->getObjCDeclQualifier(), 
-                                      PType, S, Extended);
-    S += charUnitsToString(ParmOffset);
-    ParmOffset += getObjCEncodingTypeSize(PType);
+                                      PType, S, EncodeOptionsMask);
+    if (WithOffsets) {
+      S += charUnitsToString(ParmOffset);
+      ParmOffset += getObjCEncodingTypeSize(PType);
+    }
   }
   
   return false;
@@ -4995,13 +5010,17 @@ void ASTContext::getLegacyIntegralTypeEncoding (QualType &PointeeTy) const {
 }
 
 void ASTContext::getObjCEncodingForType(QualType T, std::string& S,
-                                        const FieldDecl *Field) const {
+                                        const FieldDecl *Field,
+                                        unsigned EncodeOptionsMask) const {
   // We follow the behavior of gcc, expanding structures which are
   // directly pointed to, and expanding embedded structures. Note that
   // these rules are sufficient to prevent recursive encoding of the
   // same type.
   getObjCEncodingForTypeImpl(T, S, true, true, Field,
-                             true /* outermost type */);
+                             true /* outermost type */,
+                             false /* EncodingProperty */,
+                             false /* StructField */,
+                             EncodeOptionsMask);
 }
 
 static char getObjCEncodingForPrimitiveKind(const ASTContext *C,
@@ -5115,17 +5134,20 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
                                             bool OutermostType,
                                             bool EncodingProperty,
                                             bool StructField,
-                                            bool EncodeBlockParameters,
-                                            bool EncodeClassNames,
-                                            bool EncodePointerToObjCTypedef) const {
+                                            unsigned EncodeOptionsMask) const {
   CanQualType CT = getCanonicalType(T);
   switch (CT->getTypeClass()) {
   case Type::Builtin:
   case Type::Enum:
     if (FD && FD->isBitField())
       return EncodeBitField(this, S, T, FD);
-    if (const BuiltinType *BT = dyn_cast<BuiltinType>(CT))
+    if (const BuiltinType *BT = dyn_cast<BuiltinType>(CT)) {
       S += getObjCEncodingForPrimitiveKind(this, BT->getKind());
+      if ((EncodeOptionsMask & ObjcEncodeBOOLTypedef) != 0)
+        if (isTypeTypedefedAsBOOL(T)) {
+          S += "\"BOOL\"";
+        }
+    }
     else
       S += ObjCEncodingForEnumType(this, cast<EnumType>(CT));
     return;
@@ -5210,10 +5232,23 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
       // fall through...
     }
     S += '^';
+    if ((EncodeOptionsMask & ObjcEncodePointerTypedef) != 0)
+      // Add a name annotation if the pointer type is a typedef
+      if (const TypedefType *TT = dyn_cast<TypedefType>(T))
+        if (IdentifierInfo *II = TT->getDecl()->getIdentifier()) {
+          S += '"';
+          S += II->getNameStart();
+          S += '"';
+        }
+    
     getLegacyIntegralTypeEncoding(PointeeTy);
 
     getObjCEncodingForTypeImpl(PointeeTy, S, false, ExpandPointedToStructures,
-                               NULL);
+                               NULL,
+                               false /* OutermostType */,
+                               EncodingProperty,
+                               false /* StructField */,
+                               EncodeOptionsMask);
     return;
   }
 
@@ -5222,7 +5257,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
   case Type::VariableArray: {
     const ArrayType *AT = cast<ArrayType>(CT);
 
-    if (isa<IncompleteArrayType>(AT) && !StructField) {
+    if (isa<IncompleteArrayType>(AT) && ((EncodeOptionsMask & ObjcEncodeIncompleteArrayAsArray) == 0)) {
       // Incomplete arrays are encoded as a pointer to the array element.
       S += '^';
 
@@ -5248,9 +5283,38 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
   }
 
   case Type::FunctionNoProto:
-  case Type::FunctionProto:
+  case Type::FunctionProto: {
     S += '?';
+    if ((EncodeOptionsMask & ObjcEncodeFunctionParameters) != 0) {
+      const FunctionType *FT = T->castAs<FunctionType>();
+      
+      S += '<';
+      // Function return type
+      getObjCEncodingForTypeImpl(FT->getResultType(), S,
+                                 ExpandPointedToStructures, ExpandStructures,
+                                 FD,
+                                 false /* OutermostType */,
+                                 EncodingProperty,
+                                 false /* StructField */,
+                                 EncodeOptionsMask);
+      // Function parameters
+      if (const FunctionProtoType *FPT = dyn_cast<FunctionProtoType>(FT)) {
+        for (FunctionProtoType::arg_type_iterator I = FPT->arg_type_begin(),
+             E = FPT->arg_type_end(); I && (I != E); ++I) {
+          getObjCEncodingForTypeImpl(*I, S,
+                                     ExpandPointedToStructures,
+                                     ExpandStructures,
+                                     FD,
+                                     false /* OutermostType */,
+                                     EncodingProperty,
+                                     false /* StructField */,
+                                     EncodeOptionsMask);
+        }
+      }
+      S += '>';
+    }
     return;
+  }
 
   case Type::Record: {
     RecordDecl *RDecl = cast<RecordType>(CT)->getDecl();
@@ -5306,7 +5370,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
   case Type::BlockPointer: {
     const BlockPointerType *BT = T->castAs<BlockPointerType>();
     S += "@?"; // Unlike a pointer-to-function, which is "^?".
-    if (EncodeBlockParameters) {
+    if ((EncodeOptionsMask & ObjcEncodeBlockParameters) != 0) {
       const FunctionType *FT = BT->getPointeeType()->castAs<FunctionType>();
       
       S += '<';
@@ -5316,9 +5380,8 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
                                  FD, 
                                  false /* OutermostType */, 
                                  EncodingProperty, 
-                                 false /* StructField */, 
-                                 EncodeBlockParameters, 
-                                 EncodeClassNames);
+                                 false /* StructField */,
+                                 EncodeOptionsMask);
       // Block self
       S += "@?";
       // Block parameters
@@ -5332,8 +5395,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
                                      false /* OutermostType */, 
                                      EncodingProperty, 
                                      false /* StructField */, 
-                                     EncodeBlockParameters, 
-                                     EncodeClassNames);
+                                     EncodeOptionsMask);
         }
       }
       S += '>';
@@ -5363,8 +5425,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
         getObjCEncodingForTypeImpl(Field->getType(), S, false, true, Field);
       else
         getObjCEncodingForTypeImpl(Field->getType(), S, false, true, FD,
-                                   false, false, false, false, false,
-                                   EncodePointerToObjCTypedef);
+                                   false, false, false, ObjcEncodePointerToObjCTypedefFlag);
     }
     S += '}';
     return;
@@ -5389,7 +5450,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
       getObjCEncodingForTypeImpl(getObjCIdType(), S,
                                  ExpandPointedToStructures,
                                  ExpandStructures, FD);
-      if (FD || EncodingProperty || EncodeClassNames) {
+      if (FD || EncodingProperty || ((EncodeOptionsMask & ObjcEncodeClassNamesFlag) != 0)) {
         // Note that we do extended encoding of protocol qualifer list
         // Only when doing ivar or property encoding.
         S += '"';
@@ -5407,7 +5468,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
     QualType PointeeTy = OPT->getPointeeType();
     if (!EncodingProperty &&
         isa<TypedefType>(PointeeTy.getTypePtr()) &&
-        !EncodePointerToObjCTypedef) {
+        ((EncodeOptionsMask & ObjcEncodePointerToObjCTypedefFlag) == 0)) {
       // Another historical/compatibility reason.
       // We encode the underlying type which comes out as
       // {...};
@@ -5429,14 +5490,13 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
       getObjCEncodingForTypeImpl(PointeeTy, S,
                                  false, ExpandPointedToStructures,
                                  NULL,
-                                 false, false, false, false, false,
-                                 /*EncodePointerToObjCTypedef*/true);
+                                 false, false, false, ObjcEncodePointerToObjCTypedefFlag);;
       return;
     }
 
     S += '@';
     if (OPT->getInterfaceDecl() && 
-        (FD || EncodingProperty || EncodeClassNames)) {
+        (FD || EncodingProperty || ((EncodeOptionsMask & ObjcEncodeClassNamesFlag) != 0))) {
       S += '"';
       S += OPT->getInterfaceDecl()->getIdentifier()->getName();
       for (ObjCObjectPointerType::qual_iterator I = OPT->qual_begin(),

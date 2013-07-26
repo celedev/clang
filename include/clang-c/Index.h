@@ -2834,6 +2834,70 @@ CINDEX_LINKAGE CXCursor clang_getTypeDeclaration(CXType T);
 CINDEX_LINKAGE CXString clang_getDeclObjCTypeEncoding(CXCursor C);
 
 /**
+ * \brief Describe the available options for getting an extended Objective-C type encoding with 
+ * clang_getDeclObjCTypeExtendedEncoding.
+ */
+enum CXObjcEncodeOptions {
+  /**
+   * \brief Encode the interface of block parameters
+   *
+   * Example: a block parameter void(^)(id, unsigned, BOOL*) is encoded as @?<v@?@I^c> (instead of @?)
+   */
+  CXObjcEncodeBlockParameters          = 1 << 0,
+  
+  /**
+   * \brief Encode the class name of object pointers
+   *
+   * Example: an object of class NSArray* is encoded as @"NSArray" (instead of @)
+   */
+  CXObjcEncodeClassNamesFlag           = 1 << 1,
+  
+  /**
+   * \brief Encode the internal structure of object pointers
+   */
+  CXObjcEncodePointerToObjCTypedefFlag = 1 << 2,
+  
+  /**
+   * \brief Encode the the interface of function pointer parameters
+   *
+   * Example:  a function: float(*)(unsigned, unsigned) is encoded as ^?<fII> (instead of ^?)
+   */
+  CXObjcEncodeFunctionParameters       = 1 << 3,
+  
+  /**
+   * \brief Encode the BOOL type as c"BOOL" to distinguish it from other char parameters (instead of c)
+   */
+  CXObjcEncodeBOOLTypedef              = 1 << 4,
+  
+  /**
+   * \brief Encode the type name of typedefs pointers
+   *
+   * Example: a CFStringRef parameter is encoded as ^"CFStringRef"{CFString=} (instead of ^{CFString=})
+   */
+  CXObjcEncodePointerTypedef           = 1 << 5,
+  
+  /**
+   * \brief Encode incomplete arrays as zero-sized arrays whereas the legacy encoding considers them as pointer to the element type.
+   *
+   * Example: a float[] parameter is encoded as [0f] (instead of ^f)
+   */
+  CXObjcEncodeIncompleteArrayAsArray   = 1 << 6,
+  
+  /**
+   * \brief For functions and methods, this flag disables the generation of offsets in the signature
+   *
+   * Example: the method -(id)foo:(int)param is encoded as @@:i (instead of @12@0:4i8)
+   */
+  CXObjcEncodeDoNotIncludeOffsets      = 1 << 15
+};
+
+/**
+ * Returns the Objective-C type encoding for the specified declaration, extended according to the EncodeOptionsMask parameter.
+ */
+CINDEX_LINKAGE CXString clang_getDeclObjCTypeExtendedEncoding(CXCursor C,
+                                                              unsigned EncodeOptionsMask /* mask of CXObjcEncodeOptions */);
+    
+/**
  * \brief Retrieve the spelling of a given CXTypeKind.
  */
 CINDEX_LINKAGE CXString clang_getTypeKindSpelling(enum CXTypeKind K);

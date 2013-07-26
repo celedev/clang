@@ -6912,7 +6912,8 @@ static void Write__extendedMethodTypes_initializer(RewriteModernObjC &RewriteObj
   for (unsigned i = 0, e = Methods.size(); i < e; i++) {
     ObjCMethodDecl *MD = Methods[i];
     std::string MethodTypeString, QuoteMethodTypeString;
-    Context->getObjCEncodingForMethodDecl(MD, MethodTypeString, true);
+    Context->getObjCEncodingForMethodDecl(MD, MethodTypeString,
+                                          ASTContext::ObjcEncodeBlockParameters | ASTContext::ObjcEncodeClassNamesFlag);
     RewriteObj.QuoteDoublequotes(MethodTypeString, QuoteMethodTypeString);
     Result += "\t\""; Result += QuoteMethodTypeString; Result += "\"";
     if (i == e-1)

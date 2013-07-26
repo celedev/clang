@@ -803,21 +803,25 @@ unsigned clang_Cursor_isBitField(CXCursor C) {
   return FD->isBitField();
 }
 
-CXString clang_getDeclObjCTypeEncoding(CXCursor C) {
+CXString clang_getDeclObjCTypeExtendedEncoding(CXCursor C, unsigned EncodeOptionsMask) {
   if (!clang_isDeclaration(C.kind))
     return cxstring::createEmpty();
 
   const Decl *D = cxcursor::getCursorDecl(C);
   ASTContext &Ctx = cxcursor::getCursorContext(C);
   std::string encoding;
+  
+  // Warning: the enum values in CXObjcEncodeOptions must match the ones in ASTContext::ObjcEncodeOptions !
+  bool WithOffset = ((EncodeOptionsMask & CXObjcEncodeDoNotIncludeOffsets) == 0);
+  EncodeOptionsMask &= ~CXObjcEncodeDoNotIncludeOffsets;
 
   if (const ObjCMethodDecl *OMD = dyn_cast<ObjCMethodDecl>(D))  {
-    if (Ctx.getObjCEncodingForMethodDecl(OMD, encoding))
+    if (Ctx.getObjCEncodingForMethodDecl(OMD, encoding, EncodeOptionsMask, WithOffset))
       return cxstring::createRef("?");
   } else if (const ObjCPropertyDecl *OPD = dyn_cast<ObjCPropertyDecl>(D))
     Ctx.getObjCEncodingForPropertyDecl(OPD, NULL, encoding);
   else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D))
-    Ctx.getObjCEncodingForFunctionDecl(FD, encoding);
+    Ctx.getObjCEncodingForFunctionDecl(FD, encoding, EncodeOptionsMask, WithOffset);
   else {
     QualType Ty;
     if (const TypeDecl *TD = dyn_cast<TypeDecl>(D))
@@ -825,10 +829,14 @@ CXString clang_getDeclObjCTypeEncoding(CXCursor C) {
     else if (const ValueDecl *VD = dyn_cast<ValueDecl>(D))
       Ty = VD->getType();
     else return cxstring::createRef("?");
-    Ctx.getObjCEncodingForType(Ty, encoding);
+    Ctx.getObjCEncodingForType(Ty, encoding, 0, EncodeOptionsMask);
   }
 
   return cxstring::createDup(encoding);
 }
+
+CXString clang_getDeclObjCTypeEncoding(CXCursor C) {
+  return clang_getDeclObjCTypeExtendedEncoding(C, 0);
+}  
 
 } // end: extern "C"

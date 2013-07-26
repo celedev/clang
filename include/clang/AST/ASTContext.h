@@ -1292,12 +1292,23 @@ public:
     return getLangOpts().CPlusPlus ? BoolTy : IntTy;
   }
 
+  enum ObjcEncodeOptions {
+    ObjcEncodeBlockParameters          = 1 << 0,
+    ObjcEncodeClassNamesFlag           = 1 << 1,
+    ObjcEncodePointerToObjCTypedefFlag = 1 << 2,
+    ObjcEncodeFunctionParameters       = 1 << 3,
+    ObjcEncodeBOOLTypedef              = 1 << 4,
+    ObjcEncodePointerTypedef           = 1 << 5,
+    ObjcEncodeIncompleteArrayAsArray   = 1 << 6
+  };
+  
   /// \brief Emit the Objective-CC type encoding for the given type \p T into
   /// \p S.
   ///
   /// If \p Field is specified then record field names are also encoded.
   void getObjCEncodingForType(QualType T, std::string &S,
-                              const FieldDecl *Field=0) const;
+                              const FieldDecl *Field=0,
+                              unsigned EncodeOptionsMask = 0 /* mask of ObjcEncodeOptions */) const;
 
   void getLegacyIntegralTypeEncoding(QualType &t) const;
 
@@ -1311,7 +1322,9 @@ public:
   ///
   /// \returns true if an error occurred (e.g., because one of the parameter
   /// types is incomplete), false otherwise.
-  bool getObjCEncodingForFunctionDecl(const FunctionDecl *Decl, std::string& S);
+  bool getObjCEncodingForFunctionDecl(const FunctionDecl *Decl, std::string& S,
+                                      unsigned EncodeOptionsMask = 0, /* mask of ObjcEncodeOptions */
+                                      bool WithOffsets = true);
 
   /// \brief Emit the encoded type for the method declaration \p Decl into
   /// \p S.
@@ -1319,11 +1332,14 @@ public:
   /// \returns true if an error occurred (e.g., because one of the parameter
   /// types is incomplete), false otherwise.
   bool getObjCEncodingForMethodDecl(const ObjCMethodDecl *Decl, std::string &S,
-                                    bool Extended = false)
+                                    unsigned EncodeOptionsMask = 0, /* mask of ObjcEncodeOptions */
+                                    bool WithOffsets = true)
     const;
 
   /// \brief Return the encoded type for this block declaration.
-  std::string getObjCEncodingForBlock(const BlockExpr *blockExpr) const;
+  std::string getObjCEncodingForBlock(const BlockExpr *blockExpr,
+                                      unsigned EncodeOptionsMask = 0, /* mask of ObjcEncodeOptions */
+                                      bool WithOffsets = true) const;
   
   /// getObjCEncodingForPropertyDecl - Return the encoded type for
   /// this method declaration. If non-NULL, Container must be either
@@ -2182,9 +2198,7 @@ private:
                                   bool OutermostType = false,
                                   bool EncodingProperty = false,
                                   bool StructField = false,
-                                  bool EncodeBlockParameters = false,
-                                  bool EncodeClassNames = false,
-                                  bool EncodePointerToObjCTypedef = false) const;
+                                  unsigned EncodeOptionsMask = 0 /* mask of ObjcEncodeOptions */ ) const;
 
   // Adds the encoding of the structure's members.
   void getObjCEncodingForStructureImpl(RecordDecl *RD, std::string &S,
@@ -2194,7 +2208,7 @@ private:
   // Adds the encoding of a method parameter or return type.
   void getObjCEncodingForMethodParameter(Decl::ObjCDeclQualifier QT,
                                          QualType T, std::string& S,
-                                         bool Extended) const;
+                                         unsigned EncodeOptionsMask = 0 /* bitmask of enum ObjcEncodeOptions */) const;
 
   const ASTRecordLayout &
   getObjCLayout(const ObjCInterfaceDecl *D,

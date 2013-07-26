@@ -4926,7 +4926,10 @@ llvm::Constant *CGObjCCommonMac::GetMethodVarType(const FieldDecl *Field) {
 llvm::Constant *CGObjCCommonMac::GetMethodVarType(const ObjCMethodDecl *D,
                                                   bool Extended) {
   std::string TypeStr;
-  if (CGM.getContext().getObjCEncodingForMethodDecl(D, TypeStr, Extended))
+  unsigned EncodeOptions = 0;
+  if (Extended)
+    EncodeOptions = ObjcEncodeBlockParameters | ObjcEncodeClassNamesFlag;
+  if (CGM.getContext().getObjCEncodingForMethodDecl(D, TypeStr, EncodeOptions))
     return 0;
 
   llvm::GlobalVariable *&Entry = MethodVarTypes[TypeStr];
