@@ -16,9 +16,7 @@
 #ifndef CLANG_C_INDEX_H
 #define CLANG_C_INDEX_H
 
-#include <sys/stat.h>
 #include <time.h>
-#include <stdio.h>
 
 #include "clang-c/Platform.h"
 #include "clang-c/CXString.h"
@@ -32,7 +30,7 @@
  * compatible, thus CINDEX_VERSION_MAJOR is expected to remain stable.
  */
 #define CINDEX_VERSION_MAJOR 0
-#define CINDEX_VERSION_MINOR 19
+#define CINDEX_VERSION_MINOR 20
 
 #define CINDEX_VERSION_ENCODE(major, minor) ( \
       ((major) * 10000)                       \
@@ -412,6 +410,12 @@ CINDEX_LINKAGE CXSourceLocation clang_getLocationForOffset(CXTranslationUnit tu,
  * \brief Returns non-zero if the given source location is in a system header.
  */
 CINDEX_LINKAGE int clang_Location_isInSystemHeader(CXSourceLocation location);
+
+/**
+ * \brief Returns non-zero if the given source location is in the main file of
+ * the corresponding translation unit.
+ */
+CINDEX_LINKAGE int clang_Location_isFromMainFile(CXSourceLocation location);
 
 /**
  * \brief Retrieve a NULL (invalid) source range.
@@ -1942,7 +1946,7 @@ enum CXCursorKind {
    */
   CXCursor_CompoundStmt                  = 202,
 
-  /** \brief A case statment.
+  /** \brief A case statement.
    */
   CXCursor_CaseStmt                      = 203,
 
@@ -2091,7 +2095,8 @@ enum CXCursorKind {
   CXCursor_CXXOverrideAttr               = 405,
   CXCursor_AnnotateAttr                  = 406,
   CXCursor_AsmLabelAttr                  = 407,
-  CXCursor_LastAttr                      = CXCursor_AsmLabelAttr,
+  CXCursor_PackedAttr                    = 408,
+  CXCursor_LastAttr                      = CXCursor_PackedAttr,
      
   /* Preprocessing */
   CXCursor_PreprocessingDirective        = 500,
@@ -2673,7 +2678,8 @@ enum CXTypeKind {
   CXType_Vector = 113,
   CXType_IncompleteArray = 114,
   CXType_VariableArray = 115,
-  CXType_DependentSizedArray = 116
+  CXType_DependentSizedArray = 116,
+  CXType_MemberPointer = 117
 };
 
 /**
@@ -2690,6 +2696,8 @@ enum CXCallingConv {
   CXCallingConv_AAPCS_VFP = 7,
   CXCallingConv_PnaclCall = 8,
   CXCallingConv_IntelOclBicc = 9,
+  CXCallingConv_X86_64Win64 = 10,
+  CXCallingConv_X86_64SysV = 11,
 
   CXCallingConv_Invalid = 100,
   CXCallingConv_Unexposed = 200
@@ -3026,6 +3034,13 @@ enum CXTypeLayoutError {
 CINDEX_LINKAGE long long clang_Type_getAlignOf(CXType T);
 
 /**
+ * \brief Return the class type of an member pointer type.
+ *
+ * If a non-member-pointer type is passed in, an invalid type is returned.
+ */
+CINDEX_LINKAGE CXType clang_Type_getClassType(CXType T);
+
+/**
  * \brief Return the size of a type in bytes as per C++[expr.sizeof] standard.
  *
  * If the type declaration is invalid, CXTypeLayoutError_Invalid is returned.
@@ -3050,6 +3065,23 @@ CINDEX_LINKAGE long long clang_Type_getSizeOf(CXType T);
  *   CXTypeLayoutError_InvalidFieldName is returned.
  */
 CINDEX_LINKAGE long long clang_Type_getOffsetOf(CXType T, const char *S);
+
+enum CXRefQualifierKind {
+  /** \brief No ref-qualifier was provided. */
+  CXRefQualifier_None = 0,
+  /** \brief An lvalue ref-qualifier was provided (\c &). */
+  CXRefQualifier_LValue,
+  /** \brief An rvalue ref-qualifier was provided (\c &&). */
+  CXRefQualifier_RValue
+};
+
+/**
+ * \brief Retrieve the ref-qualifier kind of a function or method.
+ *
+ * The ref-qualifier is returned for C++ functions or methods. For other types
+ * or non-C++ declarations, CXRefQualifier_None is returned.
+ */
+CINDEX_LINKAGE enum CXRefQualifierKind clang_Type_getCXXRefQualifier(CXType T);
 
 /**
  * \brief Returns non-zero if the cursor specifies a Record member that is a

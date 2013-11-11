@@ -21,6 +21,7 @@
 #include "llvm/ADT/SmallString.h"
 
 namespace llvm {
+  class Constant;
   class GlobalValue;
   class Type;
   class Value;
@@ -73,10 +74,6 @@ namespace clang {
     ///   - that implicitly ignore/truncate the top bits when addressing
     ///     through such registers.
     virtual bool extendPointerWithSExt() const { return false; }
-
-    /// Controls whether BIpow* emit an intrinsic call instead of a library
-    /// function call.
-    virtual bool emitIntrinsicForPow() const { return true; }
 
     /// Determines the DWARF register number for the stack pointer, for
     /// exception-handling purposes.  Implements __builtin_dwarf_sp_column.
@@ -138,6 +135,13 @@ namespace clang {
     /// empty if none is required.
     virtual StringRef getARCRetainAutoreleasedReturnValueMarker() const {
       return "";
+    }
+
+    /// Return a constant used by UBSan as a signature to identify functions
+    /// possessing type information, or 0 if the platform is unsupported.
+    virtual llvm::Constant *getUBSanFunctionSignature(
+        CodeGen::CodeGenModule &CGM) const {
+      return 0;
     }
 
     /// Determine whether a call to an unprototyped functions under

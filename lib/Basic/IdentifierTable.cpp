@@ -461,24 +461,17 @@ ObjCInstanceTypeFamily Selector::getInstTypeMethodFamily(Selector sel) {
   if (name.empty()) return OIT_None;
   switch (name.front()) {
     case 'a':
-      if (startsWithWord(name, "alloc")) return OIT_MemManage;
-      else
-        if (startsWithWord(name, "array")) return OIT_Array;
+      if (startsWithWord(name, "array")) return OIT_Array;
       break;
     case 'd':
+      if (startsWithWord(name, "default")) return OIT_ReturnsSelf;
       if (startsWithWord(name, "dictionary")) return OIT_Dictionary;
       break;
-    case 'i':
-      if (startsWithWord(name, "init")) return OIT_MemManage;
-      break;
     case 's':
-      if (startsWithWord(name, "string")) return OIT_NSString;
-      else
-        if (startsWithWord(name, "set")) return OIT_NSSet;
-      break;
-    case 'U':
-      if (startsWithWord(name, "URL")) return OIT_NSURL;
-      break;
+      if (startsWithWord(name, "shared")) return OIT_ReturnsSelf;
+      if (startsWithWord(name, "standard")) return OIT_Singleton;
+    case 'i':
+      if (startsWithWord(name, "init")) return OIT_Init;
     default:
       break;
   }

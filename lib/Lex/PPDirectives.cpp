@@ -17,6 +17,7 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/CodeCompletionHandler.h"
 #include "clang/Lex/HeaderSearch.h"
+#include "clang/Lex/HeaderSearchOptions.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/LiteralSupport.h"
 #include "clang/Lex/MacroInfo.h"
@@ -531,6 +532,88 @@ void Preprocessor::PTHSkipExcludedConditionalBlock() {
   }
 }
 
+Module *Preprocessor::getModuleForLocation(SourceLocation FilenameLoc) {
+  ModuleMap &ModMap = HeaderInfo.getModuleMap();
+  if (SourceMgr.isInMainFile(FilenameLoc)) {
+    if (Module *CurMod = getCurrentModule())
+      return CurMod;                               // Compiling a module.
+    return HeaderInfo.getModuleMap().SourceModule; // Compiling a source.
+  }
+  // Try to determine the module of the include directive.
+  FileID IDOfIncl = SourceMgr.getFileID(FilenameLoc);
+  if (const FileEntry *EntryOfIncl = SourceMgr.getFileEntryForID(IDOfIncl)) {
+    // The include comes from a file.
+    return ModMap.findModuleForHeader(EntryOfIncl).getModule();
+  } else {
+    // The include does not come from a file,
+    // so it is probably a module compilation.
+    return getCurrentModule();
+  }
+}
+
+bool Preprocessor::violatesPrivateInclude(
+    Module *RequestingModule,
+    const FileEntry *IncFileEnt,
+    ModuleMap::ModuleHeaderRole Role,
+    Module *RequestedModule) {
+  #ifndef NDEBUG
+  // Check for consistency between the module header role
+  // as obtained from the lookup and as obtained from the module.
+  // This check is not cheap, so enable it only for debugging.
+  SmallVectorImpl<const FileEntry *> &PvtHdrs
+      = RequestedModule->PrivateHeaders;
+  SmallVectorImpl<const FileEntry *>::iterator Look
+      = std::find(PvtHdrs.begin(), PvtHdrs.end(), IncFileEnt);
+  bool IsPrivate = Look != PvtHdrs.end();
+  assert((IsPrivate && Role == ModuleMap::PrivateHeader)
+               || (!IsPrivate && Role != ModuleMap::PrivateHeader));
+  #endif
+  return Role == ModuleMap::PrivateHeader &&
+         RequestedModule->getTopLevelModule() != RequestingModule;
+}
+
+bool Preprocessor::violatesUseDeclarations(
+    Module *RequestingModule,
+    Module *RequestedModule) {
+  ModuleMap &ModMap = HeaderInfo.getModuleMap();
+  ModMap.resolveUses(RequestingModule, /*Complain=*/false);
+  const SmallVectorImpl<Module *> &AllowedUses = RequestingModule->DirectUses;
+  SmallVectorImpl<Module *>::const_iterator Declared =
+      std::find(AllowedUses.begin(), AllowedUses.end(), RequestedModule);
+  return Declared == AllowedUses.end();
+}
+
+void Preprocessor::verifyModuleInclude(SourceLocation FilenameLoc,
+                                       StringRef Filename,
+                                       const FileEntry *IncFileEnt) {
+  Module *RequestingModule = getModuleForLocation(FilenameLoc);
+  if (RequestingModule)
+    HeaderInfo.getModuleMap().resolveUses(RequestingModule, /*Complain=*/false);
+  ModuleMap::KnownHeader RequestedModule =
+      HeaderInfo.getModuleMap().findModuleForHeader(IncFileEnt,
+                                                    RequestingModule);
+
+  if (RequestingModule == RequestedModule.getModule())
+    return; // No faults wihin a module, or between files both not in modules.
+
+  if (RequestingModule != HeaderInfo.getModuleMap().SourceModule)
+    return; // No errors for indirect modules.
+            // This may be a bit of a problem for modules with no source files.
+
+  if (RequestedModule && violatesPrivateInclude(RequestingModule, IncFileEnt,
+                                                RequestedModule.getRole(),
+                                                RequestedModule.getModule()))
+    Diag(FilenameLoc, diag::error_use_of_private_header_outside_module)
+        << Filename;
+
+  // FIXME: Add support for FixIts in module map files and offer adding the
+  // required use declaration.
+  if (RequestingModule && getLangOpts().ModulesDeclUse &&
+      violatesUseDeclarations(RequestingModule, RequestedModule.getModule()))
+    Diag(FilenameLoc, diag::error_undeclared_use_of_module)
+        << Filename;
+}
+
 const FileEntry *Preprocessor::LookupFile(
     SourceLocation FilenameLoc,
     StringRef Filename,
@@ -566,29 +649,8 @@ const FileEntry *Preprocessor::LookupFile(
       Filename, isAngled, FromDir, CurDir, CurFileEnt,
       SearchPath, RelativePath, SuggestedModule, SkipCache);
   if (FE) {
-    if (SuggestedModule) {
-      Module *RequestedModule = SuggestedModule->getModule();
-      if (RequestedModule) {
-        ModuleMap::ModuleHeaderRole Role = SuggestedModule->getRole();
-        #ifndef NDEBUG
-        // Check for consistency between the module header role
-        // as obtained from the lookup and as obtained from the module.
-        // This check is not cheap, so enable it only for debugging.
-        SmallVectorImpl<const FileEntry *> &PvtHdrs
-            = RequestedModule->PrivateHeaders;
-        SmallVectorImpl<const FileEntry *>::iterator Look
-            = std::find(PvtHdrs.begin(), PvtHdrs.end(), FE);
-        bool IsPrivate = Look != PvtHdrs.end();
-        assert((IsPrivate && Role == ModuleMap::PrivateHeader)
-               || (!IsPrivate && Role != ModuleMap::PrivateHeader));
-        #endif
-        if (Role == ModuleMap::PrivateHeader) {
-          if (RequestedModule->getTopLevelModule() != getCurrentModule())
-            Diag(FilenameLoc, diag::error_use_of_private_header_outside_module)
-                 << Filename;
-        }
-      }
-    }
+    if (SuggestedModule)
+      verifyModuleInclude(FilenameLoc, Filename, FE);
     return FE;
   }
 
@@ -849,6 +911,11 @@ static bool GetLineValue(Token &DigitTok, unsigned &Val,
   // here.
   Val = 0;
   for (unsigned i = 0; i != ActualLength; ++i) {
+    // C++1y [lex.fcon]p1:
+    //   Optional separating single quotes in a digit-sequence are ignored
+    if (DigitTokBegin[i] == '\'')
+      continue;
+
     if (!isDigit(DigitTokBegin[i])) {
       PP.Diag(PP.AdvanceToTokenCharacter(DigitTok.getLocation(), i),
               diag::err_pp_line_digit_sequence) << IsGNULineDirective;
@@ -1421,7 +1488,7 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
   const FileEntry *File = LookupFile(
       FilenameLoc, Filename, isAngled, LookupFrom, CurDir,
       Callbacks ? &SearchPath : NULL, Callbacks ? &RelativePath : NULL,
-      getLangOpts().Modules? &SuggestedModule : 0);
+      HeaderInfo.getHeaderSearchOpts().ModuleMaps ? &SuggestedModule : 0);
 
   if (Callbacks) {
     if (!File) {
@@ -1435,13 +1502,15 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
           
           // Try the lookup again, skipping the cache.
           File = LookupFile(FilenameLoc, Filename, isAngled, LookupFrom, CurDir,
-                            0, 0, getLangOpts().Modules? &SuggestedModule : 0,
-                            /*SkipCache*/true);
+                            0, 0, HeaderInfo.getHeaderSearchOpts().ModuleMaps
+                                      ? &SuggestedModule
+                                      : 0,
+                            /*SkipCache*/ true);
         }
       }
     }
     
-    if (!SuggestedModule) {
+    if (!SuggestedModule || !getLangOpts().Modules) {
       // Notify the callback object that we've seen an inclusion directive.
       Callbacks->InclusionDirective(HashLoc, IncludeTok, Filename, isAngled,
                                     FilenameRange, File,
@@ -1456,10 +1525,10 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
       // brackets, we can attempt a lookup as though it were a quoted path to
       // provide the user with a possible fixit.
       if (isAngled) {
-        File = LookupFile(FilenameLoc, Filename, false, LookupFrom, CurDir, 
-                          Callbacks ? &SearchPath : 0, 
-                          Callbacks ? &RelativePath : 0, 
-                          getLangOpts().Modules ? &SuggestedModule : 0);
+        File = LookupFile(
+            FilenameLoc, Filename, false, LookupFrom, CurDir,
+            Callbacks ? &SearchPath : 0, Callbacks ? &RelativePath : 0,
+            HeaderInfo.getHeaderSearchOpts().ModuleMaps ? &SuggestedModule : 0);
         if (File) {
           SourceRange Range(FilenameTok.getLocation(), CharEnd);
           Diag(FilenameTok, diag::err_pp_file_not_found_not_fatal) << 
@@ -1477,7 +1546,7 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
 
   // If we are supposed to import a module rather than including the header,
   // do so now.
-  if (SuggestedModule) {
+  if (SuggestedModule && getLangOpts().Modules) {
     // Compute the module access path corresponding to this module.
     // FIXME: Should we have a second loadModule() overload to avoid this
     // extra lookup step?
@@ -1936,13 +2005,8 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
             MI->getReplacementToken(NumTokens-1).is(tok::comma))
           MI->setHasCommaPasting();
 
-        // Things look ok, add the '##' and param name tokens to the macro.
+        // Things look ok, add the '##' token to the macro.
         MI->AddTokenToBody(LastTok);
-        MI->AddTokenToBody(Tok);
-        LastTok = Tok;
-
-        // Get the next token of the macro.
-        LexUnexpandedToken(Tok);
         continue;
       }
 
@@ -2037,7 +2101,7 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
   assert(!MI->isUsed());
   // If we need warning for not using the macro, add its location in the
   // warn-because-unused-macro set. If it gets used it will be removed from set.
-  if (isInPrimaryFile() && // don't warn for include'd macros.
+  if (getSourceManager().isInMainFile(MI->getDefinitionLoc()) &&
       Diags->getDiagnosticLevel(diag::pp_macro_not_used,
           MI->getDefinitionLoc()) != DiagnosticsEngine::Ignored) {
     MI->setIsWarnIfUnused(true);

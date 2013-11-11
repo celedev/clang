@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple i686-linux -Wno-string-plus-int -fsyntax-only -fcxx-exceptions -verify -std=c++11 -pedantic %s -Wno-comment
+// RUN: %clang_cc1 -triple i686-linux -Wno-string-plus-int -Wno-pointer-arith -Wno-zero-length-array -fsyntax-only -fcxx-exceptions -verify -std=c++11 -pedantic %s -Wno-comment
 
 namespace StaticAssertFoldTest {
 
@@ -1726,4 +1726,101 @@ namespace Lifetime {
   };
   constexpr int k1 = S().t; // ok, int is lifetime-extended to end of constructor
   constexpr int k2 = S(0).t; // expected-error {{constant expression}} expected-note {{in call}}
+}
+
+namespace Bitfields {
+  struct A {
+    bool b : 1;
+    unsigned u : 5;
+    int n : 5;
+    bool b2 : 3;
+    unsigned u2 : 74; // expected-warning {{exceeds the size of its type}}
+    int n2 : 81; // expected-warning {{exceeds the size of its type}}
+  };
+
+  constexpr A a = { false, 33, 31, false, 0xffffffff, 0x7fffffff }; // expected-warning 2{{truncation}}
+  static_assert(a.b == 0 && a.u == 1 && a.n == -1 && a.b2 == 0 &&
+                a.u2 + 1 == 0 && a.n2 == 0x7fffffff,
+                "bad truncation of bitfield values");
+
+  struct B {
+    int n : 3;
+    constexpr B(int k) : n(k) {}
+  };
+  static_assert(B(3).n == 3, "");
+  static_assert(B(4).n == -4, "");
+  static_assert(B(7).n == -1, "");
+  static_assert(B(8).n == 0, "");
+  static_assert(B(-1).n == -1, "");
+  static_assert(B(-8889).n == -1, "");
+
+  namespace PR16755 {
+    struct X {
+      int x : 1;
+      constexpr static int f(int x) {
+        return X{x}.x;
+      }
+    };
+    static_assert(X::f(3) == -1, "3 should truncate to -1");
+  }
+}
+
+namespace ZeroSizeTypes {
+  constexpr int (*p1)[0] = 0, (*p2)[0] = 0;
+  constexpr int k = p2 - p1;
+  // expected-error@-1 {{constexpr variable 'k' must be initialized by a constant expression}}
+  // expected-note@-2 {{subtraction of pointers to type 'int [0]' of zero size}}
+
+  int arr[5][0];
+  constexpr int f() { // expected-error {{never produces a constant expression}}
+    return &arr[3] - &arr[0]; // expected-note {{subtraction of pointers to type 'int [0]' of zero size}}
+  }
+}
+
+namespace BadDefaultInit {
+  template<int N> struct X { static const int n = N; };
+
+  struct A { // expected-note {{subexpression}}
+    int k = X<A().k>::n; // expected-error {{defaulted default constructor of 'A' cannot be used}} expected-error {{not a constant expression}} expected-note {{in call to 'A()'}}
+  };
+
+  // FIXME: The "constexpr constructor must initialize all members" diagnostic
+  // here is bogus (we discard the k(k) initializer because the parameter 'k'
+  // has been marked invalid).
+  struct B { // expected-note 2{{candidate}}
+    constexpr B( // expected-error {{must initialize all members}} expected-note {{candidate}}
+        int k = X<B().k>::n) : // expected-error {{no matching constructor}}
+      k(k) {}
+    int k; // expected-note {{not initialized}}
+  };
+}
+
+namespace NeverConstantTwoWays {
+  // If we see something non-constant but foldable followed by something
+  // non-constant and not foldable, we want the first diagnostic, not the
+  // second.
+  constexpr int f(int n) { // expected-error {{never produces a constant expression}}
+    return (int *)(long)&n == &n ? // expected-note {{reinterpret_cast}}
+        1 / 0 : // expected-warning {{division by zero}}
+        0;
+  }
+
+  // FIXME: We should diagnose the cast to long here, not the division by zero.
+  constexpr int n = // expected-error {{must be initialized by a constant expression}}
+      (int *)(long)&n == &n ?
+        1 / 0 : // expected-warning {{division by zero}} expected-note {{division by zero}}
+        0;
+}
+
+namespace PR17800 {
+  struct A {
+    constexpr int operator()() const { return 0; }
+  };
+  template <typename ...T> constexpr int sink(T ...) {
+    return 0;
+  }
+  template <int ...N> constexpr int run() {
+    return sink(A()() + N ...);
+  }
+  constexpr int k = run<1, 2, 3>();
 }

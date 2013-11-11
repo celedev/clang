@@ -48,48 +48,6 @@ void RegistryMaps::registerMatcher(StringRef MatcherName,
   Constructors[MatcherName] = Callback;
 }
 
-/// \brief MatcherCreateCallback that wraps multiple "overloads" of the same
-///   matcher.
-///
-/// It will try every overload and generate appropriate errors for when none or
-/// more than one overloads match the arguments.
-class OverloadedMatcherCreateCallback : public MatcherCreateCallback {
- public:
-   OverloadedMatcherCreateCallback(ArrayRef<MatcherCreateCallback *> Callbacks)
-       : Overloads(Callbacks) {}
-
-  virtual ~OverloadedMatcherCreateCallback() {
-    for (size_t i = 0, e = Overloads.size(); i != e; ++i)
-      delete Overloads[i];
-  }
-
-  virtual MatcherList run(const SourceRange &NameRange,
-                          ArrayRef<ParserValue> Args,
-                          Diagnostics *Error) const {
-    std::vector<MatcherList> Constructed;
-    Diagnostics::OverloadContext Ctx(Error);
-    for (size_t i = 0, e = Overloads.size(); i != e; ++i) {
-      MatcherList SubMatcher = Overloads[i]->run(NameRange, Args, Error);
-      if (!SubMatcher.empty()) {
-        Constructed.push_back(SubMatcher);
-      }
-    }
-
-    if (Constructed.empty()) return MatcherList();  // No overload matched.
-    // We ignore the errors if any matcher succeeded.
-    Ctx.revertErrors();
-    if (Constructed.size() > 1) {
-      // More than one constructed. It is ambiguous.
-      Error->addError(NameRange, Error->ET_RegistryAmbiguousOverload);
-      return MatcherList();
-    }
-    return Constructed[0];
-  }
-
- private:
-  std::vector<MatcherCreateCallback*> Overloads;
-};
-
 #define REGISTER_MATCHER(name)                                                 \
   registerMatcher(#name, internal::makeMatcherAutoMarshall(                    \
                              ::clang::ast_matchers::name, #name));
@@ -106,7 +64,8 @@ class OverloadedMatcherCreateCallback : public MatcherCreateCallback {
       internal::makeMatcherAutoMarshall(SPECIFIC_MATCHER_OVERLOAD(name, 1),    \
                                         #name)                                 \
     };                                                                         \
-    registerMatcher(#name, new OverloadedMatcherCreateCallback(Callbacks));    \
+    registerMatcher(#name,                                                     \
+                    new internal::OverloadedMatcherCreateCallback(Callbacks)); \
   } while (0)
 
 /// \brief Generate a registry map with all the known matchers.
@@ -118,18 +77,7 @@ RegistryMaps::RegistryMaps() {
   //
   // Polymorphic + argument overload:
   // unless
-  // eachOf
-  // anyOf
-  // allOf
   // findAll
-  //
-  // Adaptative matcher (similar to polymorphic matcher):
-  // has
-  // forEach
-  // forEachDescendant
-  // hasDescendant
-  // hasParent
-  // hasAncestor
   //
   // Other:
   // loc
@@ -148,6 +96,8 @@ RegistryMaps::RegistryMaps() {
 
   REGISTER_MATCHER(accessSpecDecl);
   REGISTER_MATCHER(alignOfExpr);
+  REGISTER_MATCHER(allOf);
+  REGISTER_MATCHER(anyOf);
   REGISTER_MATCHER(anything);
   REGISTER_MATCHER(argumentCountIs);
   REGISTER_MATCHER(arraySubscriptExpr);
@@ -179,6 +129,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(constructorDecl);
   REGISTER_MATCHER(containsDeclaration);
   REGISTER_MATCHER(continueStmt);
+  REGISTER_MATCHER(ctorInitializer);
   REGISTER_MATCHER(decl);
   REGISTER_MATCHER(declCountIs);
   REGISTER_MATCHER(declRefExpr);
@@ -189,12 +140,16 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(destructorDecl);
   REGISTER_MATCHER(doStmt);
   REGISTER_MATCHER(dynamicCastExpr);
+  REGISTER_MATCHER(eachOf);
   REGISTER_MATCHER(elaboratedType);
   REGISTER_MATCHER(enumConstantDecl);
   REGISTER_MATCHER(enumDecl);
   REGISTER_MATCHER(explicitCastExpr);
   REGISTER_MATCHER(expr);
   REGISTER_MATCHER(fieldDecl);
+  REGISTER_MATCHER(floatLiteral);
+  REGISTER_MATCHER(forEach);
+  REGISTER_MATCHER(forEachDescendant);
   REGISTER_MATCHER(forField);
   REGISTER_MATCHER(forRangeStmt);
   REGISTER_MATCHER(forStmt);
@@ -203,6 +158,8 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(functionType);
   REGISTER_MATCHER(functionalCastExpr);
   REGISTER_MATCHER(gotoStmt);
+  REGISTER_MATCHER(has);
+  REGISTER_MATCHER(hasAncestor);
   REGISTER_MATCHER(hasAnyArgument);
   REGISTER_MATCHER(hasAnyConstructorInitializer);
   REGISTER_MATCHER(hasAnyParameter);
@@ -218,6 +175,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(hasConditionVariableStatement);
   REGISTER_MATCHER(hasDeclContext);
   REGISTER_MATCHER(hasDeducedType);
+  REGISTER_MATCHER(hasDescendant);
   REGISTER_MATCHER(hasDestinationType);
   REGISTER_MATCHER(hasEitherOperand);
   REGISTER_MATCHER(hasElementType);
@@ -235,6 +193,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(hasOperatorName);
   REGISTER_MATCHER(hasOverloadedOperatorName);
   REGISTER_MATCHER(hasParameter);
+  REGISTER_MATCHER(hasParent);
   REGISTER_MATCHER(hasQualifier);
   REGISTER_MATCHER(hasRHS);
   REGISTER_MATCHER(hasSingleDecl);
@@ -347,38 +306,38 @@ static llvm::ManagedStatic<RegistryMaps> RegistryData;
 } // anonymous namespace
 
 // static
-MatcherList Registry::constructMatcher(StringRef MatcherName,
-                                       const SourceRange &NameRange,
-                                       ArrayRef<ParserValue> Args,
-                                       Diagnostics *Error) {
+VariantMatcher Registry::constructMatcher(StringRef MatcherName,
+                                          const SourceRange &NameRange,
+                                          ArrayRef<ParserValue> Args,
+                                          Diagnostics *Error) {
   ConstructorMap::const_iterator it =
       RegistryData->constructors().find(MatcherName);
   if (it == RegistryData->constructors().end()) {
     Error->addError(NameRange, Error->ET_RegistryNotFound) << MatcherName;
-    return MatcherList();
+    return VariantMatcher();
   }
 
   return it->second->run(NameRange, Args, Error);
 }
 
 // static
-MatcherList Registry::constructBoundMatcher(StringRef MatcherName,
-                                            const SourceRange &NameRange,
-                                            StringRef BindID,
-                                            ArrayRef<ParserValue> Args,
-                                            Diagnostics *Error) {
-  MatcherList Out = constructMatcher(MatcherName, NameRange, Args, Error);
-  if (Out.empty()) return Out;
+VariantMatcher Registry::constructBoundMatcher(StringRef MatcherName,
+                                               const SourceRange &NameRange,
+                                               StringRef BindID,
+                                               ArrayRef<ParserValue> Args,
+                                               Diagnostics *Error) {
+  VariantMatcher Out = constructMatcher(MatcherName, NameRange, Args, Error);
+  if (Out.isNull()) return Out;
 
-  ArrayRef<const DynTypedMatcher*> Matchers = Out.matchers();
-  if (Matchers.size() == 1) {
-    OwningPtr<DynTypedMatcher> Bound(Matchers[0]->tryBind(BindID));
-    if (Bound) {
-      return *Bound;
+  llvm::Optional<DynTypedMatcher> Result = Out.getSingleMatcher();
+  if (Result.hasValue()) {
+    llvm::Optional<DynTypedMatcher> Bound = Result->tryBind(BindID);
+    if (Bound.hasValue()) {
+      return VariantMatcher::SingleMatcher(*Bound);
     }
   }
   Error->addError(NameRange, Error->ET_RegistryNotBindable);
-  return MatcherList();
+  return VariantMatcher();
 }
 
 }  // namespace dynamic

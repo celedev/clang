@@ -1,7 +1,7 @@
 // RUN: rm -rf %t
-// RUN: %clang_cc1 -objcmt-migrate-property -mt-migrate-directory %t %s -x objective-c -fobjc-runtime-has-weak -fobjc-arc -fobjc-default-synthesize-properties -triple x86_64-apple-darwin11
+// RUN: %clang_cc1 -objcmt-migrate-instancetype -mt-migrate-directory %t %s -x objective-c -fobjc-runtime-has-weak -fobjc-arc -triple x86_64-apple-darwin11
 // RUN: c-arcmt-test -mt-migrate-directory %t | arcmt-test -verify-transformed-files %s.result
-// RUN: %clang_cc1 -triple x86_64-apple-darwin11 -fsyntax-only -x objective-c -fobjc-runtime-has-weak -fobjc-arc -fobjc-default-synthesize-properties %s.result
+// RUN: %clang_cc1 -triple x86_64-apple-darwin11 -fsyntax-only -x objective-c -fobjc-runtime-has-weak -fobjc-arc %s.result
 
 typedef signed char BOOL;
 #define nil ((void*) 0)
@@ -15,6 +15,11 @@ typedef signed char BOOL;
 - (id)initWithString:(NSString *)aString;
 @end
 
+@implementation NSString : NSObject
++ (id)stringWithString:(NSString *)string { return 0; };
+- (instancetype)initWithString:(NSString *)aString { return 0; };
+@end
+
 @interface NSArray : NSObject
 - (id)objectAtIndex:(unsigned long)index;
 - (id)objectAtIndexedSubscript:(int)index;
@@ -25,13 +30,32 @@ typedef signed char BOOL;
 + (id)arrayWithObject:(id)anObject;
 + (id)arrayWithObjects:(const id [])objects count:(unsigned long)cnt;
 + (id)arrayWithObjects:(id)firstObj, ...;
-+ (id)arrayWithArray:(NSArray *)array;
++ arrayWithArray:(NSArray *)array;
 
 - (id)initWithObjects:(const id [])objects count:(unsigned long)cnt;
 - (id)initWithObjects:(id)firstObj, ...;
 - (id)initWithArray:(NSArray *)array;
 
 - (id)objectAtIndex:(unsigned long)index;
+@end
+
+@implementation NSArray (NSArrayCreation)
++ (id)array { return 0; }
++ (id)arrayWithObject:(id)anObject {
+  return anObject;
+}
++ (id)arrayWithObjects:(const id [])objects count:(unsigned long)cnt { return 0; }
++ (id)arrayWithObjects:(id)firstObj, ... {
+  return 0; }
++ arrayWithArray:(NSArray *)array {
+  return 0;
+}
+
+- (id)initWithObjects:(const id [])objects count:(unsigned long)cnt { return 0; }
+- (id)initWithObjects:(id)firstObj, ... { return 0; }
+- (id)initWithArray:(NSArray *)array { return 0; }
+
+- (id)objectAtIndex:(unsigned long)index { return 0; }
 @end
 
 @interface NSMutableArray : NSArray
@@ -47,7 +71,7 @@ typedef signed char BOOL;
 + (id)dictionary;
 + (id)dictionaryWithObject:(id)object forKey:(id)key;
 + (id)dictionaryWithObjects:(const id [])objects forKeys:(const id [])keys count:(unsigned long)cnt;
-+ (id)dictionaryWithObjectsAndKeys:(id)firstObject, ...;
++ dictionaryWithObjectsAndKeys:(id)firstObject, ...;
 + (id)dictionaryWithDictionary:(NSDictionary *)dict;
 + (id)dictionaryWithObjects:(NSArray *)objects forKeys:(NSArray *)keys;
 
@@ -69,6 +93,10 @@ typedef signed char BOOL;
 
 @interface NSNumber (NSNumberCreation)
 + (NSNumber *)numberWithInt:(int)value;
+@end
+
+@implementation NSNumber (NSNumberCreation)
++ (NSNumber *)numberWithInt:(int)value { return 0; }
 @end
 
 #define M(x) (x)

@@ -20,6 +20,7 @@
 #include "clang/AST/EvaluatedExprVisitor.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/Mangle.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Basic/Builtins.h"
@@ -238,8 +239,8 @@ SourceLocation Expr::getExprLoc() const {
 /// \brief Compute the type-, value-, and instantiation-dependence of a 
 /// declaration reference
 /// based on the declaration being referenced.
-static void computeDeclRefDependence(ASTContext &Ctx, NamedDecl *D, QualType T,
-                                     bool &TypeDependent,
+static void computeDeclRefDependence(const ASTContext &Ctx, NamedDecl *D,
+                                     QualType T, bool &TypeDependent,
                                      bool &ValueDependent,
                                      bool &InstantiationDependent) {
   TypeDependent = false;
@@ -328,7 +329,7 @@ static void computeDeclRefDependence(ASTContext &Ctx, NamedDecl *D, QualType T,
   }
 }
 
-void DeclRefExpr::computeDependence(ASTContext &Ctx) {
+void DeclRefExpr::computeDependence(const ASTContext &Ctx) {
   bool TypeDependent = false;
   bool ValueDependent = false;
   bool InstantiationDependent = false;
@@ -362,7 +363,7 @@ void DeclRefExpr::computeDependence(ASTContext &Ctx) {
     ExprBits.ContainsUnexpandedParameterPack = true;
 }
 
-DeclRefExpr::DeclRefExpr(ASTContext &Ctx,
+DeclRefExpr::DeclRefExpr(const ASTContext &Ctx,
                          NestedNameSpecifierLoc QualifierLoc,
                          SourceLocation TemplateKWLoc,
                          ValueDecl *D, bool RefersToEnclosingLocal,
@@ -399,7 +400,7 @@ DeclRefExpr::DeclRefExpr(ASTContext &Ctx,
   computeDependence(Ctx);
 }
 
-DeclRefExpr *DeclRefExpr::Create(ASTContext &Context,
+DeclRefExpr *DeclRefExpr::Create(const ASTContext &Context,
                                  NestedNameSpecifierLoc QualifierLoc,
                                  SourceLocation TemplateKWLoc,
                                  ValueDecl *D,
@@ -415,7 +416,7 @@ DeclRefExpr *DeclRefExpr::Create(ASTContext &Context,
                 T, VK, FoundD, TemplateArgs);
 }
 
-DeclRefExpr *DeclRefExpr::Create(ASTContext &Context,
+DeclRefExpr *DeclRefExpr::Create(const ASTContext &Context,
                                  NestedNameSpecifierLoc QualifierLoc,
                                  SourceLocation TemplateKWLoc,
                                  ValueDecl *D,
@@ -445,7 +446,7 @@ DeclRefExpr *DeclRefExpr::Create(ASTContext &Context,
                                NameInfo, FoundD, TemplateArgs, T, VK);
 }
 
-DeclRefExpr *DeclRefExpr::CreateEmpty(ASTContext &Context,
+DeclRefExpr *DeclRefExpr::CreateEmpty(const ASTContext &Context,
                                       bool HasQualifier,
                                       bool HasFoundDecl,
                                       bool HasTemplateKWAndArgsInfo,
@@ -478,6 +479,30 @@ SourceLocation DeclRefExpr::getLocEnd() const {
 std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
   ASTContext &Context = CurrentDecl->getASTContext();
 
+  if (IT == PredefinedExpr::FuncDName) {
+    if (const NamedDecl *ND = dyn_cast<NamedDecl>(CurrentDecl)) {
+      OwningPtr<MangleContext> MC;
+      MC.reset(Context.createMangleContext());
+
+      if (MC->shouldMangleDeclName(ND)) {
+        SmallString<256> Buffer;
+        llvm::raw_svector_ostream Out(Buffer);
+        if (const CXXConstructorDecl *CD = dyn_cast<CXXConstructorDecl>(ND))
+          MC->mangleCXXCtor(CD, Ctor_Base, Out);
+        else if (const CXXDestructorDecl *DD = dyn_cast<CXXDestructorDecl>(ND))
+          MC->mangleCXXDtor(DD, Dtor_Base, Out);
+        else
+          MC->mangleName(ND, Out);
+
+        Out.flush();
+        if (!Buffer.empty() && Buffer.front() == '\01')
+          return Buffer.substr(1);
+        return Buffer.str();
+      } else
+        return ND->getIdentifier()->getName();
+    }
+    return "";
+  }
   if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(CurrentDecl)) {
     if (IT != PrettyFunction && IT != PrettyFunctionNoVirtual)
       return FD->getNameAsString();
@@ -585,13 +610,34 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
 
     POut.flush();
 
-    if (!isa<CXXConstructorDecl>(FD) && !isa<CXXDestructorDecl>(FD))
+    // Print "auto" for all deduced return types. This includes C++1y return
+    // type deduction and lambdas. For trailing return types resolve the
+    // decltype expression. Otherwise print the real type when this is
+    // not a constructor or destructor.
+    if ((isa<CXXMethodDecl>(FD) &&
+         cast<CXXMethodDecl>(FD)->getParent()->isLambda()) ||
+        (FT && FT->getResultType()->getAs<AutoType>()))
+      Proto = "auto " + Proto;
+    else if (FT && FT->getResultType()->getAs<DecltypeType>())
+      FT->getResultType()->getAs<DecltypeType>()->getUnderlyingType()
+          .getAsStringInternal(Proto, Policy);
+    else if (!isa<CXXConstructorDecl>(FD) && !isa<CXXDestructorDecl>(FD))
       AFT->getResultType().getAsStringInternal(Proto, Policy);
 
     Out << Proto;
 
     Out.flush();
     return Name.str().str();
+  }
+  if (const CapturedDecl *CD = dyn_cast<CapturedDecl>(CurrentDecl)) {
+    for (const DeclContext *DC = CD->getParent(); DC; DC = DC->getParent())
+      // Skip to its enclosing function or method, but not its enclosing
+      // CapturedDecl.
+      if (DC->isFunctionOrMethod() && (DC->getDeclKind() != Decl::Captured)) {
+        const Decl *D = Decl::castFromDeclContext(DC);
+        return ComputeName(IT, D);
+      }
+    llvm_unreachable("CapturedDecl not inside a function or method");
   }
   if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(CurrentDecl)) {
     SmallString<256> Name;
@@ -622,7 +668,8 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
   return "";
 }
 
-void APNumericStorage::setIntValue(ASTContext &C, const llvm::APInt &Val) {
+void APNumericStorage::setIntValue(const ASTContext &C,
+                                   const llvm::APInt &Val) {
   if (hasAllocation())
     C.Deallocate(pVal);
 
@@ -638,7 +685,7 @@ void APNumericStorage::setIntValue(ASTContext &C, const llvm::APInt &Val) {
     VAL = 0;
 }
 
-IntegerLiteral::IntegerLiteral(ASTContext &C, const llvm::APInt &V,
+IntegerLiteral::IntegerLiteral(const ASTContext &C, const llvm::APInt &V,
                                QualType type, SourceLocation l)
   : Expr(IntegerLiteralClass, type, VK_RValue, OK_Ordinary, false, false,
          false, false),
@@ -650,17 +697,17 @@ IntegerLiteral::IntegerLiteral(ASTContext &C, const llvm::APInt &V,
 }
 
 IntegerLiteral *
-IntegerLiteral::Create(ASTContext &C, const llvm::APInt &V,
+IntegerLiteral::Create(const ASTContext &C, const llvm::APInt &V,
                        QualType type, SourceLocation l) {
   return new (C) IntegerLiteral(C, V, type, l);
 }
 
 IntegerLiteral *
-IntegerLiteral::Create(ASTContext &C, EmptyShell Empty) {
+IntegerLiteral::Create(const ASTContext &C, EmptyShell Empty) {
   return new (C) IntegerLiteral(Empty);
 }
 
-FloatingLiteral::FloatingLiteral(ASTContext &C, const llvm::APFloat &V,
+FloatingLiteral::FloatingLiteral(const ASTContext &C, const llvm::APFloat &V,
                                  bool isexact, QualType Type, SourceLocation L)
   : Expr(FloatingLiteralClass, Type, VK_RValue, OK_Ordinary, false, false,
          false, false), Loc(L) {
@@ -669,20 +716,20 @@ FloatingLiteral::FloatingLiteral(ASTContext &C, const llvm::APFloat &V,
   setValue(C, V);
 }
 
-FloatingLiteral::FloatingLiteral(ASTContext &C, EmptyShell Empty)
+FloatingLiteral::FloatingLiteral(const ASTContext &C, EmptyShell Empty)
   : Expr(FloatingLiteralClass, Empty) {
   setRawSemantics(IEEEhalf);
   FloatingLiteralBits.IsExact = false;
 }
 
 FloatingLiteral *
-FloatingLiteral::Create(ASTContext &C, const llvm::APFloat &V,
+FloatingLiteral::Create(const ASTContext &C, const llvm::APFloat &V,
                         bool isexact, QualType Type, SourceLocation L) {
   return new (C) FloatingLiteral(C, V, isexact, Type, L);
 }
 
 FloatingLiteral *
-FloatingLiteral::Create(ASTContext &C, EmptyShell Empty) {
+FloatingLiteral::Create(const ASTContext &C, EmptyShell Empty) {
   return new (C) FloatingLiteral(C, Empty);
 }
 
@@ -756,7 +803,7 @@ int StringLiteral::mapCharByteWidth(TargetInfo const &target,StringKind k) {
   return CharByteWidth;
 }
 
-StringLiteral *StringLiteral::Create(ASTContext &C, StringRef Str,
+StringLiteral *StringLiteral::Create(const ASTContext &C, StringRef Str,
                                      StringKind Kind, bool Pascal, QualType Ty,
                                      const SourceLocation *Loc,
                                      unsigned NumStrs) {
@@ -778,7 +825,8 @@ StringLiteral *StringLiteral::Create(ASTContext &C, StringRef Str,
   return SL;
 }
 
-StringLiteral *StringLiteral::CreateEmpty(ASTContext &C, unsigned NumStrs) {
+StringLiteral *StringLiteral::CreateEmpty(const ASTContext &C,
+                                          unsigned NumStrs) {
   void *Mem = C.Allocate(sizeof(StringLiteral)+
                          sizeof(SourceLocation)*(NumStrs-1),
                          llvm::alignOf<StringLiteral>());
@@ -882,7 +930,7 @@ void StringLiteral::outputString(raw_ostream &OS) const {
   OS << '"';
 }
 
-void StringLiteral::setString(ASTContext &C, StringRef Str,
+void StringLiteral::setString(const ASTContext &C, StringRef Str,
                               StringKind Kind, bool IsPascal) {
   //FIXME: we assume that the string data comes from a target that uses the same
   // code unit size and endianess for the type of string.
@@ -1035,9 +1083,9 @@ OverloadedOperatorKind UnaryOperator::getOverloadedOperator(Opcode Opc) {
 // Postfix Operators.
 //===----------------------------------------------------------------------===//
 
-CallExpr::CallExpr(ASTContext& C, StmtClass SC, Expr *fn, unsigned NumPreArgs,
-                   ArrayRef<Expr*> args, QualType t, ExprValueKind VK,
-                   SourceLocation rparenloc)
+CallExpr::CallExpr(const ASTContext& C, StmtClass SC, Expr *fn,
+                   unsigned NumPreArgs, ArrayRef<Expr*> args, QualType t,
+                   ExprValueKind VK, SourceLocation rparenloc)
   : Expr(SC, t, VK, OK_Ordinary,
          fn->isTypeDependent(),
          fn->isValueDependent(),
@@ -1064,7 +1112,7 @@ CallExpr::CallExpr(ASTContext& C, StmtClass SC, Expr *fn, unsigned NumPreArgs,
   RParenLoc = rparenloc;
 }
 
-CallExpr::CallExpr(ASTContext& C, Expr *fn, ArrayRef<Expr*> args,
+CallExpr::CallExpr(const ASTContext& C, Expr *fn, ArrayRef<Expr*> args,
                    QualType t, ExprValueKind VK, SourceLocation rparenloc)
   : Expr(CallExprClass, t, VK, OK_Ordinary,
          fn->isTypeDependent(),
@@ -1092,14 +1140,14 @@ CallExpr::CallExpr(ASTContext& C, Expr *fn, ArrayRef<Expr*> args,
   RParenLoc = rparenloc;
 }
 
-CallExpr::CallExpr(ASTContext &C, StmtClass SC, EmptyShell Empty)
+CallExpr::CallExpr(const ASTContext &C, StmtClass SC, EmptyShell Empty)
   : Expr(SC, Empty), SubExprs(0), NumArgs(0) {
   // FIXME: Why do we allocate this?
   SubExprs = new (C) Stmt*[PREARGS_START];
   CallExprBits.NumPreArgs = 0;
 }
 
-CallExpr::CallExpr(ASTContext &C, StmtClass SC, unsigned NumPreArgs,
+CallExpr::CallExpr(const ASTContext &C, StmtClass SC, unsigned NumPreArgs,
                    EmptyShell Empty)
   : Expr(SC, Empty), SubExprs(0), NumArgs(0) {
   // FIXME: Why do we allocate this?
@@ -1138,7 +1186,7 @@ FunctionDecl *CallExpr::getDirectCallee() {
 /// setNumArgs - This changes the number of arguments present in this call.
 /// Any orphaned expressions are deleted by this, and any new operands are set
 /// to null.
-void CallExpr::setNumArgs(ASTContext& C, unsigned NumArgs) {
+void CallExpr::setNumArgs(const ASTContext& C, unsigned NumArgs) {
   // No change, just return.
   if (NumArgs == getNumArgs()) return;
 
@@ -1227,7 +1275,7 @@ SourceLocation CallExpr::getLocEnd() const {
   return end;
 }
 
-OffsetOfExpr *OffsetOfExpr::Create(ASTContext &C, QualType type, 
+OffsetOfExpr *OffsetOfExpr::Create(const ASTContext &C, QualType type,
                                    SourceLocation OperatorLoc,
                                    TypeSourceInfo *tsi, 
                                    ArrayRef<OffsetOfNode> comps,
@@ -1241,7 +1289,7 @@ OffsetOfExpr *OffsetOfExpr::Create(ASTContext &C, QualType type,
                                 RParenLoc);
 }
 
-OffsetOfExpr *OffsetOfExpr::CreateEmpty(ASTContext &C,
+OffsetOfExpr *OffsetOfExpr::CreateEmpty(const ASTContext &C,
                                         unsigned numComps, unsigned numExprs) {
   void *Mem = C.Allocate(sizeof(OffsetOfExpr) +
                          sizeof(OffsetOfNode) * numComps +
@@ -1249,7 +1297,7 @@ OffsetOfExpr *OffsetOfExpr::CreateEmpty(ASTContext &C,
   return new (Mem) OffsetOfExpr(numComps, numExprs);
 }
 
-OffsetOfExpr::OffsetOfExpr(ASTContext &C, QualType type, 
+OffsetOfExpr::OffsetOfExpr(const ASTContext &C, QualType type,
                            SourceLocation OperatorLoc, TypeSourceInfo *tsi,
                            ArrayRef<OffsetOfNode> comps, ArrayRef<Expr*> exprs,
                            SourceLocation RParenLoc)
@@ -1283,7 +1331,7 @@ IdentifierInfo *OffsetOfExpr::OffsetOfNode::getFieldName() const {
   return reinterpret_cast<IdentifierInfo *> (Data & ~(uintptr_t)Mask);
 }
 
-MemberExpr *MemberExpr::Create(ASTContext &C, Expr *base, bool isarrow,
+MemberExpr *MemberExpr::Create(const ASTContext &C, Expr *base, bool isarrow,
                                NestedNameSpecifierLoc QualifierLoc,
                                SourceLocation TemplateKWLoc,
                                ValueDecl *memberdecl,
@@ -1637,7 +1685,7 @@ void CastExpr::setCastPath(const CXXCastPath &Path) {
   memcpy(path_buffer(), Path.data(), Path.size() * sizeof(CXXBaseSpecifier*));
 }
 
-ImplicitCastExpr *ImplicitCastExpr::Create(ASTContext &C, QualType T,
+ImplicitCastExpr *ImplicitCastExpr::Create(const ASTContext &C, QualType T,
                                            CastKind Kind, Expr *Operand,
                                            const CXXCastPath *BasePath,
                                            ExprValueKind VK) {
@@ -1650,7 +1698,7 @@ ImplicitCastExpr *ImplicitCastExpr::Create(ASTContext &C, QualType T,
   return E;
 }
 
-ImplicitCastExpr *ImplicitCastExpr::CreateEmpty(ASTContext &C,
+ImplicitCastExpr *ImplicitCastExpr::CreateEmpty(const ASTContext &C,
                                                 unsigned PathSize) {
   void *Buffer =
     C.Allocate(sizeof(ImplicitCastExpr) + PathSize * sizeof(CXXBaseSpecifier*));
@@ -1658,7 +1706,7 @@ ImplicitCastExpr *ImplicitCastExpr::CreateEmpty(ASTContext &C,
 }
 
 
-CStyleCastExpr *CStyleCastExpr::Create(ASTContext &C, QualType T,
+CStyleCastExpr *CStyleCastExpr::Create(const ASTContext &C, QualType T,
                                        ExprValueKind VK, CastKind K, Expr *Op,
                                        const CXXCastPath *BasePath,
                                        TypeSourceInfo *WrittenTy,
@@ -1672,7 +1720,8 @@ CStyleCastExpr *CStyleCastExpr::Create(ASTContext &C, QualType T,
   return E;
 }
 
-CStyleCastExpr *CStyleCastExpr::CreateEmpty(ASTContext &C, unsigned PathSize) {
+CStyleCastExpr *CStyleCastExpr::CreateEmpty(const ASTContext &C,
+                                            unsigned PathSize) {
   void *Buffer =
     C.Allocate(sizeof(CStyleCastExpr) + PathSize * sizeof(CXXBaseSpecifier*));
   return new (Buffer) CStyleCastExpr(EmptyShell(), PathSize);
@@ -1781,7 +1830,7 @@ OverloadedOperatorKind BinaryOperator::getOverloadedOperator(Opcode Opc) {
   return OverOps[Opc];
 }
 
-InitListExpr::InitListExpr(ASTContext &C, SourceLocation lbraceloc,
+InitListExpr::InitListExpr(const ASTContext &C, SourceLocation lbraceloc,
                            ArrayRef<Expr*> initExprs, SourceLocation rbraceloc)
   : Expr(InitListExprClass, QualType(), VK_RValue, OK_Ordinary, false, false,
          false, false),
@@ -1803,16 +1852,16 @@ InitListExpr::InitListExpr(ASTContext &C, SourceLocation lbraceloc,
   InitExprs.insert(C, InitExprs.end(), initExprs.begin(), initExprs.end());
 }
 
-void InitListExpr::reserveInits(ASTContext &C, unsigned NumInits) {
+void InitListExpr::reserveInits(const ASTContext &C, unsigned NumInits) {
   if (NumInits > InitExprs.size())
     InitExprs.reserve(C, NumInits);
 }
 
-void InitListExpr::resizeInits(ASTContext &C, unsigned NumInits) {
+void InitListExpr::resizeInits(const ASTContext &C, unsigned NumInits) {
   InitExprs.resize(C, NumInits, 0);
 }
 
-Expr *InitListExpr::updateInit(ASTContext &C, unsigned Init, Expr *expr) {
+Expr *InitListExpr::updateInit(const ASTContext &C, unsigned Init, Expr *expr) {
   if (Init >= InitExprs.size()) {
     InitExprs.insert(C, InitExprs.end(), Init - InitExprs.size() + 1, 0);
     InitExprs.back() = expr;
@@ -2177,7 +2226,7 @@ bool Expr::isUnusedResultAWarning(const Expr *&WarnE, SourceLocation &Loc,
     WarnE = this;
     if (const CXXFunctionalCastExpr *CXXCE =
             dyn_cast<CXXFunctionalCastExpr>(this)) {
-      Loc = CXXCE->getTypeBeginLoc();
+      Loc = CXXCE->getLocStart();
       R1 = CXXCE->getSubExpr()->getSourceRange();
     } else {
       const CStyleCastExpr *CStyleCE = cast<CStyleCastExpr>(this);
@@ -2630,9 +2679,6 @@ bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef) const {
     return Exp->isConstantInitializer(Ctx, false);
   }
   case InitListExprClass: {
-    // FIXME: This doesn't deal with fields with reference types correctly.
-    // FIXME: This incorrectly allows pointers cast to integers to be assigned
-    // to bitfields.
     const InitListExpr *ILE = cast<InitListExpr>(this);
     if (ILE->getType()->isArrayType()) {
       unsigned numInits = ILE->getNumInits();
@@ -2819,6 +2865,7 @@ bool Expr::HasSideEffects(const ASTContext &Ctx) const {
   case SubstNonTypeTemplateParmExprClass:
   case MaterializeTemporaryExprClass:
   case ShuffleVectorExprClass:
+  case ConvertVectorExprClass:
   case AsTypeExprClass:
     // These have a side-effect if any subexpression does.
     break;
@@ -3364,7 +3411,7 @@ void ObjCMessageExpr::initArgsAndSelLocs(ArrayRef<Expr *> Args,
   }
 }
 
-ObjCMessageExpr *ObjCMessageExpr::Create(ASTContext &Context, QualType T,
+ObjCMessageExpr *ObjCMessageExpr::Create(const ASTContext &Context, QualType T,
                                          ExprValueKind VK,
                                          SourceLocation LBracLoc,
                                          SourceLocation SuperLoc,
@@ -3389,7 +3436,7 @@ ObjCMessageExpr *ObjCMessageExpr::Create(ASTContext &Context, QualType T,
                                    Method, Args, RBracLoc, isImplicit);
 }
 
-ObjCMessageExpr *ObjCMessageExpr::Create(ASTContext &Context, QualType T,
+ObjCMessageExpr *ObjCMessageExpr::Create(const ASTContext &Context, QualType T,
                                          ExprValueKind VK,
                                          SourceLocation LBracLoc,
                                          TypeSourceInfo *Receiver,
@@ -3412,7 +3459,7 @@ ObjCMessageExpr *ObjCMessageExpr::Create(ASTContext &Context, QualType T,
                                    isImplicit);
 }
 
-ObjCMessageExpr *ObjCMessageExpr::Create(ASTContext &Context, QualType T,
+ObjCMessageExpr *ObjCMessageExpr::Create(const ASTContext &Context, QualType T,
                                          ExprValueKind VK,
                                          SourceLocation LBracLoc,
                                          Expr *Receiver,
@@ -3435,14 +3482,14 @@ ObjCMessageExpr *ObjCMessageExpr::Create(ASTContext &Context, QualType T,
                                    isImplicit);
 }
 
-ObjCMessageExpr *ObjCMessageExpr::CreateEmpty(ASTContext &Context, 
+ObjCMessageExpr *ObjCMessageExpr::CreateEmpty(const ASTContext &Context,
                                               unsigned NumArgs,
                                               unsigned NumStoredSelLocs) {
   ObjCMessageExpr *Mem = alloc(Context, NumArgs, NumStoredSelLocs);
   return new (Mem) ObjCMessageExpr(EmptyShell(), NumArgs);
 }
 
-ObjCMessageExpr *ObjCMessageExpr::alloc(ASTContext &C,
+ObjCMessageExpr *ObjCMessageExpr::alloc(const ASTContext &C,
                                         ArrayRef<Expr *> Args,
                                         SourceLocation RBraceLoc,
                                         ArrayRef<SourceLocation> SelLocs,
@@ -3454,7 +3501,7 @@ ObjCMessageExpr *ObjCMessageExpr::alloc(ASTContext &C,
   return alloc(C, Args.size(), NumStoredSelLocs);
 }
 
-ObjCMessageExpr *ObjCMessageExpr::alloc(ASTContext &C,
+ObjCMessageExpr *ObjCMessageExpr::alloc(const ASTContext &C,
                                         unsigned NumArgs,
                                         unsigned NumStoredSelLocs) {
   unsigned Size = sizeof(ObjCMessageExpr) + sizeof(void *) + 
@@ -3531,7 +3578,7 @@ StringRef ObjCBridgedCastExpr::getBridgeKindName() const {
   llvm_unreachable("Invalid BridgeKind!");
 }
 
-ShuffleVectorExpr::ShuffleVectorExpr(ASTContext &C, ArrayRef<Expr*> args,
+ShuffleVectorExpr::ShuffleVectorExpr(const ASTContext &C, ArrayRef<Expr*> args,
                                      QualType Type, SourceLocation BLoc,
                                      SourceLocation RP) 
    : Expr(ShuffleVectorExprClass, Type, VK_RValue, OK_Ordinary,
@@ -3555,7 +3602,7 @@ ShuffleVectorExpr::ShuffleVectorExpr(ASTContext &C, ArrayRef<Expr*> args,
   }
 }
 
-void ShuffleVectorExpr::setExprs(ASTContext &C, ArrayRef<Expr *> Exprs) {
+void ShuffleVectorExpr::setExprs(const ASTContext &C, ArrayRef<Expr *> Exprs) {
   if (SubExprs) C.Deallocate(SubExprs);
 
   this->NumExprs = Exprs.size();
@@ -3563,7 +3610,7 @@ void ShuffleVectorExpr::setExprs(ASTContext &C, ArrayRef<Expr *> Exprs) {
   memcpy(SubExprs, Exprs.data(), sizeof(Expr *) * Exprs.size());
 }
 
-GenericSelectionExpr::GenericSelectionExpr(ASTContext &Context,
+GenericSelectionExpr::GenericSelectionExpr(const ASTContext &Context,
                                SourceLocation GenericLoc, Expr *ControllingExpr,
                                ArrayRef<TypeSourceInfo*> AssocTypes,
                                ArrayRef<Expr*> AssocExprs,
@@ -3589,7 +3636,7 @@ GenericSelectionExpr::GenericSelectionExpr(ASTContext &Context,
   std::copy(AssocExprs.begin(), AssocExprs.end(), SubExprs+END_EXPR);
 }
 
-GenericSelectionExpr::GenericSelectionExpr(ASTContext &Context,
+GenericSelectionExpr::GenericSelectionExpr(const ASTContext &Context,
                                SourceLocation GenericLoc, Expr *ControllingExpr,
                                ArrayRef<TypeSourceInfo*> AssocTypes,
                                ArrayRef<Expr*> AssocExprs,
@@ -3626,7 +3673,7 @@ IdentifierInfo *DesignatedInitExpr::Designator::getFieldName() const {
     return getField()->getIdentifier();
 }
 
-DesignatedInitExpr::DesignatedInitExpr(ASTContext &C, QualType Ty, 
+DesignatedInitExpr::DesignatedInitExpr(const ASTContext &C, QualType Ty,
                                        unsigned NumDesignators,
                                        const Designator *Designators,
                                        SourceLocation EqualOrColonLoc,
@@ -3693,7 +3740,7 @@ DesignatedInitExpr::DesignatedInitExpr(ASTContext &C, QualType Ty,
 }
 
 DesignatedInitExpr *
-DesignatedInitExpr::Create(ASTContext &C, Designator *Designators,
+DesignatedInitExpr::Create(const ASTContext &C, Designator *Designators,
                            unsigned NumDesignators,
                            ArrayRef<Expr*> IndexExprs,
                            SourceLocation ColonOrEqualLoc,
@@ -3705,14 +3752,14 @@ DesignatedInitExpr::Create(ASTContext &C, Designator *Designators,
                                       IndexExprs, Init);
 }
 
-DesignatedInitExpr *DesignatedInitExpr::CreateEmpty(ASTContext &C,
+DesignatedInitExpr *DesignatedInitExpr::CreateEmpty(const ASTContext &C,
                                                     unsigned NumIndexExprs) {
   void *Mem = C.Allocate(sizeof(DesignatedInitExpr) +
                          sizeof(Stmt *) * (NumIndexExprs + 1), 8);
   return new (Mem) DesignatedInitExpr(NumIndexExprs + 1);
 }
 
-void DesignatedInitExpr::setDesignators(ASTContext &C,
+void DesignatedInitExpr::setDesignators(const ASTContext &C,
                                         const Designator *Desigs,
                                         unsigned NumDesigs) {
   Designators = new (C) Designator[NumDesigs];
@@ -3779,7 +3826,7 @@ Expr *DesignatedInitExpr::getArrayRangeEnd(const Designator &D) const {
 
 /// \brief Replaces the designator at index @p Idx with the series
 /// of designators in [First, Last).
-void DesignatedInitExpr::ExpandDesignator(ASTContext &C, unsigned Idx,
+void DesignatedInitExpr::ExpandDesignator(const ASTContext &C, unsigned Idx,
                                           const Designator *First,
                                           const Designator *Last) {
   unsigned NumNewDesignators = Last - First;
@@ -3804,7 +3851,7 @@ void DesignatedInitExpr::ExpandDesignator(ASTContext &C, unsigned Idx,
   NumDesignators = NumDesignators - 1 + NumNewDesignators;
 }
 
-ParenListExpr::ParenListExpr(ASTContext& C, SourceLocation lparenloc,
+ParenListExpr::ParenListExpr(const ASTContext& C, SourceLocation lparenloc,
                              ArrayRef<Expr*> exprs,
                              SourceLocation rparenloc)
   : Expr(ParenListExprClass, QualType(), VK_RValue, OK_Ordinary,
@@ -3836,7 +3883,8 @@ const OpaqueValueExpr *OpaqueValueExpr::findInCopyConstruct(const Expr *e) {
   return cast<OpaqueValueExpr>(e);
 }
 
-PseudoObjectExpr *PseudoObjectExpr::Create(ASTContext &Context, EmptyShell sh,
+PseudoObjectExpr *PseudoObjectExpr::Create(const ASTContext &Context,
+                                           EmptyShell sh,
                                            unsigned numSemanticExprs) {
   void *buffer = Context.Allocate(sizeof(PseudoObjectExpr) +
                                     (1 + numSemanticExprs) * sizeof(Expr*),
@@ -3849,7 +3897,7 @@ PseudoObjectExpr::PseudoObjectExpr(EmptyShell shell, unsigned numSemanticExprs)
   PseudoObjectExprBits.NumSubExprs = numSemanticExprs + 1;
 }
 
-PseudoObjectExpr *PseudoObjectExpr::Create(ASTContext &C, Expr *syntax,
+PseudoObjectExpr *PseudoObjectExpr::Create(const ASTContext &C, Expr *syntax,
                                            ArrayRef<Expr*> semantics,
                                            unsigned resultIndex) {
   assert(syntax && "no syntactic expression!");
@@ -3964,7 +4012,7 @@ ObjCArrayLiteral::ObjCArrayLiteral(ArrayRef<Expr *> Elements,
   }
 }
 
-ObjCArrayLiteral *ObjCArrayLiteral::Create(ASTContext &C, 
+ObjCArrayLiteral *ObjCArrayLiteral::Create(const ASTContext &C,
                                            ArrayRef<Expr *> Elements,
                                            QualType T, ObjCMethodDecl * Method,
                                            SourceRange SR) {
@@ -3973,7 +4021,7 @@ ObjCArrayLiteral *ObjCArrayLiteral::Create(ASTContext &C,
   return new (Mem) ObjCArrayLiteral(Elements, T, Method, SR);
 }
 
-ObjCArrayLiteral *ObjCArrayLiteral::CreateEmpty(ASTContext &C, 
+ObjCArrayLiteral *ObjCArrayLiteral::CreateEmpty(const ASTContext &C,
                                                 unsigned NumElements) {
   
   void *Mem = C.Allocate(sizeof(ObjCArrayLiteral) 
@@ -4018,7 +4066,7 @@ ObjCDictionaryLiteral::ObjCDictionaryLiteral(
 }
 
 ObjCDictionaryLiteral *
-ObjCDictionaryLiteral::Create(ASTContext &C,
+ObjCDictionaryLiteral::Create(const ASTContext &C,
                               ArrayRef<ObjCDictionaryElement> VK, 
                               bool HasPackExpansions,
                               QualType T, ObjCMethodDecl *method,
@@ -4033,7 +4081,7 @@ ObjCDictionaryLiteral::Create(ASTContext &C,
 }
 
 ObjCDictionaryLiteral *
-ObjCDictionaryLiteral::CreateEmpty(ASTContext &C, unsigned NumElements,
+ObjCDictionaryLiteral::CreateEmpty(const ASTContext &C, unsigned NumElements,
                                    bool HasPackExpansions) {
   unsigned ExpansionsSize = 0;
   if (HasPackExpansions)
@@ -4044,7 +4092,7 @@ ObjCDictionaryLiteral::CreateEmpty(ASTContext &C, unsigned NumElements,
                                          HasPackExpansions);
 }
 
-ObjCSubscriptRefExpr *ObjCSubscriptRefExpr::Create(ASTContext &C,
+ObjCSubscriptRefExpr *ObjCSubscriptRefExpr::Create(const ASTContext &C,
                                                    Expr *base,
                                                    Expr *key, QualType T, 
                                                    ObjCMethodDecl *getMethod,

@@ -279,6 +279,16 @@ bool Parser::SkipUntil(ArrayRef<tok::TokenKind> Toks, bool StopAtSemi,
       }
     }
 
+    // Important special case: The caller has given up and just wants us to
+    // skip the rest of the file. Do this without recursing, since we can
+    // get here precisely because the caller detected too much recursion.
+    if (Toks.size() == 1 && Toks[0] == tok::eof && !StopAtSemi &&
+        !StopAtCodeCompletion) {
+      while (Tok.getKind() != tok::eof)
+        ConsumeAnyToken();
+      return true;
+    }
+
     switch (Tok.getKind()) {
     case tok::eof:
       // Ran out of tokens.
@@ -412,11 +422,6 @@ Parser::~Parser() {
   for (unsigned i = 0, e = NumCachedScopes; i != e; ++i)
     delete ScopeCache[i];
 
-  // Free LateParsedTemplatedFunction nodes.
-  for (LateParsedTemplateMapT::iterator it = LateParsedTemplateMap.begin();
-      it != LateParsedTemplateMap.end(); ++it)
-    delete it->second;
-
   // Remove the pragma handlers we installed.
   PP.RemovePragmaHandler(AlignHandler.get());
   AlignHandler.reset();
@@ -481,6 +486,7 @@ void Parser::Initialize() {
 
   Ident_instancetype = 0;
   Ident_final = 0;
+  Ident_sealed = 0;
   Ident_override = 0;
 
   Ident_super = &PP.getIdentifierTable().get("super");
@@ -913,6 +919,26 @@ Parser::ParseDeclarationOrFunctionDefinition(ParsedAttributesWithRange &attrs,
   }
 }
 
+
+static inline bool isFunctionDeclaratorRequiringReturnTypeDeduction(
+    const Declarator &D) {
+  if (!D.isFunctionDeclarator() || !D.getDeclSpec().containsPlaceholderType()) 
+    return false;
+  for (unsigned I = 0, E = D.getNumTypeObjects(); I != E; ++I) {
+    unsigned chunkIndex = E - I - 1;
+    const DeclaratorChunk &DeclType = D.getTypeObject(chunkIndex);
+    if (DeclType.Kind == DeclaratorChunk::Function) {
+      const DeclaratorChunk::FunctionTypeInfo &FTI = DeclType.Fun;
+      if (!FTI.hasTrailingReturnType()) 
+        return true;
+      QualType TrailingRetType = FTI.getTrailingReturnType().get();
+      return TrailingRetType->getCanonicalTypeInternal()
+        ->getContainedAutoType();
+    }
+  } 
+  return false;
+}
+
 /// ParseFunctionDefinition - We parsed and verified that the specified
 /// Declarator is well formed.  If this is a K&R-style function, read the
 /// parameters declaration-list, then start the compound-statement.
@@ -984,9 +1010,10 @@ Decl *Parser::ParseFunctionDefinition(ParsingDeclarator &D,
 
   // In delayed template parsing mode, for function template we consume the
   // tokens and store them for late parsing at the end of the translation unit.
-  if (getLangOpts().DelayedTemplateParsing &&
-      Tok.isNot(tok::equal) &&
-      TemplateInfo.Kind == ParsedTemplateInfo::Template) {
+  if (getLangOpts().DelayedTemplateParsing && Tok.isNot(tok::equal) &&
+      TemplateInfo.Kind == ParsedTemplateInfo::Template &&
+      !D.getDeclSpec().isConstexprSpecified() && 
+      !isFunctionDeclaratorRequiringReturnTypeDeduction(D)) {
     MultiTemplateParamsArg TemplateParameterLists(*TemplateInfo.TemplateParams);
     
     ParseScope BodyScope(this, Scope::FnScope|Scope::DeclScope);
@@ -998,22 +1025,18 @@ Decl *Parser::ParseFunctionDefinition(ParsingDeclarator &D,
     D.complete(DP);
     D.getMutableDeclSpec().abort();
 
-    if (DP) {
-      LateParsedTemplatedFunction *LPT = new LateParsedTemplatedFunction(DP);
+    CachedTokens Toks;
+    LexTemplateFunctionForLateParsing(Toks);
 
+    if (DP) {
       FunctionDecl *FnD = 0;
       if (FunctionTemplateDecl *FunTmpl = dyn_cast<FunctionTemplateDecl>(DP))
         FnD = FunTmpl->getTemplatedDecl();
       else
         FnD = cast<FunctionDecl>(DP);
-      Actions.CheckForFunctionRedefinition(FnD);
 
-      LateParsedTemplateMap[FnD] = LPT;
-      Actions.MarkAsLateParsedTemplate(FnD);
-      LexTemplateFunctionForLateParsing(LPT->Toks);
-    } else {
-      CachedTokens Toks;
-      LexTemplateFunctionForLateParsing(Toks);
+      Actions.CheckForFunctionRedefinition(FnD);
+      Actions.MarkAsLateParsedTemplate(FnD, DP, Toks);
     }
     return DP;
   }
@@ -1427,8 +1450,9 @@ Parser::TryAnnotateName(bool IsAddressOfOperand,
       return ANK_TemplateName;
     }
     // Fall through.
+  case Sema::NC_VarTemplate:
   case Sema::NC_FunctionTemplate: {
-    // We have a type or function template followed by '<'.
+    // We have a type, variable or function template followed by '<'.
     ConsumeToken();
     UnqualifiedId Id;
     Id.setIdentifier(Name, NameLoc);
@@ -1478,6 +1502,23 @@ bool Parser::TryAnnotateTypeOrScopeToken(bool EnteringContext, bool NeedType) {
           && "Cannot be a type or scope token!");
 
   if (Tok.is(tok::kw_typename)) {
+    // MSVC lets you do stuff like:
+    //   typename typedef T_::D D;
+    //
+    // We will consume the typedef token here and put it back after we have
+    // parsed the first identifier, transforming it into something more like:
+    //   typename T_::D typedef D;
+    if (getLangOpts().MicrosoftMode && NextToken().is(tok::kw_typedef)) {
+      Token TypedefToken;
+      PP.Lex(TypedefToken);
+      bool Result = TryAnnotateTypeOrScopeToken(EnteringContext, NeedType);
+      PP.EnterToken(Tok);
+      Tok = TypedefToken;
+      if (!Result)
+        Diag(Tok.getLocation(), diag::warn_expected_qualified_after_typename);
+      return Result;
+    }
+
     // Parse a C++ typename-specifier, e.g., "typename T::type".
     //
     //   typename-specifier:
@@ -1496,7 +1537,7 @@ bool Parser::TryAnnotateTypeOrScopeToken(bool EnteringContext, bool NeedType) {
         // Attempt to recover by skipping the invalid 'typename'
         if (Tok.is(tok::annot_decltype) ||
             (!TryAnnotateTypeOrScopeToken(EnteringContext, NeedType) &&
-            Tok.isAnnotation())) {
+             Tok.isAnnotation())) {
           unsigned DiagID = diag::err_expected_qualified_after_typename;
           // MS compatibility: MSVC permits using known types with typename.
           // e.g. "typedef typename T* pointer_type"
@@ -1643,7 +1684,8 @@ bool Parser::TryAnnotateTypeOrScopeTokenAfterScopeSpec(bool EnteringContext,
       // annotation token to a type annotation token now.
       AnnotateTemplateIdTokenAsType();
       return false;
-    }
+    } else if (TemplateId->Kind == TNK_Var_template)
+      return false;
   }
 
   if (SS.isEmpty())
@@ -1908,7 +1950,7 @@ bool BalancedDelimiterTracker::diagnoseOverflow() {
   P.Diag(P.Tok, diag::err_bracket_depth_exceeded)
     << P.getLangOpts().BracketDepth;
   P.Diag(P.Tok, diag::note_bracket_depth);
-  P.SkipUntil(tok::eof, FinalToken);
+  P.SkipUntil(tok::eof, false);
   return true;  
 }
 
@@ -1938,12 +1980,18 @@ bool BalancedDelimiterTracker::diagnoseMissingClose() {
   }
   P.Diag(P.Tok, DID);
   P.Diag(LOpen, diag::note_matching) << LHSName;
-  if (P.SkipUntil(Close, FinalToken, /*StopAtSemi*/ true, /*DontConsume*/ true)
-      && P.Tok.is(Close))
+
+  // If we're not already at some kind of closing bracket, skip to our closing
+  // token.
+  if (P.Tok.isNot(tok::r_paren) && P.Tok.isNot(tok::r_brace) &&
+      P.Tok.isNot(tok::r_square) &&
+      P.SkipUntil(Close, FinalToken, /*StopAtSemi*/true, /*DontConsume*/true) &&
+      P.Tok.is(Close))
     LClose = P.ConsumeAnyToken();
   return true;
 }
 
 void BalancedDelimiterTracker::skipToEnd() {
-  P.SkipUntil(Close, false);
+  P.SkipUntil(Close, false, true);
+  consumeClose();
 }

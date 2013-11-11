@@ -12,7 +12,7 @@
 // RUN: not %clang -target mips64-linux-gnu -faltivec -fsyntax-only %s 2>&1 | FileCheck %s
 // RUN: not %clang -target sparc-unknown-solaris -faltivec -fsyntax-only %s 2>&1 | FileCheck %s
 
-// CHECK: invalid argument '-faltivec' only allowed with 'ppc/ppc64'
+// CHECK: invalid argument '-faltivec' only allowed with 'ppc/ppc64/ppc64le'
 
 // Check that -fno-altivec and -mno-altivec correctly disable the altivec
 // target feature on powerpc.
@@ -85,4 +85,10 @@
 
 // RUN: %clang -target powerpc64-unknown-linux-gnu %s -mno-fprnd -mfprnd -### -o %t.o 2>&1 | FileCheck -check-prefix=CHECK-FPRND %s
 // CHECK-FPRND: "-target-feature" "+fprnd"
+
+// RUN: %clang -target powerpc64-unknown-linux-gnu %s -mno-vsx -### -o %t.o 2>&1 | FileCheck -check-prefix=CHECK-NOVSX %s
+// CHECK-NOVSX: "-target-feature" "-vsx"
+
+// RUN: %clang -target powerpc64-unknown-linux-gnu %s -mno-vsx -mvsx -### -o %t.o 2>&1 | FileCheck -check-prefix=CHECK-VSX %s
+// CHECK-VSX: "-target-feature" "+vsx"
 

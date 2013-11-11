@@ -23,6 +23,8 @@ def err_asm_empty : Error<"__asm used with no assembly instructions">;
 def err_inline_ms_asm_parsing : Error<"%0">;
 def err_msasm_unsupported_arch : Error<
   "Unsupported architecture '%0' for MS-style inline assembly">;
+def err_msasm_unable_to_create_target : Error<
+  "MS-style inline assembly is not available: %0">;
 }
 
 let CategoryName = "Parse Issue" in {
@@ -54,7 +56,7 @@ def warn_duplicate_declspec : Warning<"duplicate '%0' declaration specifier">,
 def ext_plain_complex : ExtWarn<
   "plain '_Complex' requires a type specifier; assuming '_Complex double'">;
 def ext_integer_complex : Extension<
-  "complex integer types are a GNU extension">, InGroup<GNU>;
+  "complex integer types are a GNU extension">, InGroup<GNUComplexInteger>;
 def ext_thread_before : Extension<"'__thread' before '%0'">;
 
 def error_empty_enum : Error<"use of empty enum">;
@@ -71,8 +73,6 @@ def ext_c99_variable_decl_in_for_loop : Extension<
   "variable declaration in for loop is a C99-specific feature">, InGroup<C99>;
 def ext_c99_compound_literal : Extension<
   "compound literals are a C99-specific feature">, InGroup<C99>;
-def ext_c99_flexible_array_member : Extension<
-  "Flexible array members are a C99-specific feature">, InGroup<C99>;
 def ext_enumerator_list_comma_c : Extension<
   "commas at the end of enumerator lists are a C99-specific "
   "feature">, InGroup<C99>;
@@ -99,7 +99,7 @@ def warn_cxx98_compat_alignof : Warning<
   "alignof expressions are incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
 def ext_alignof_expr : ExtWarn<
-  "%0 applied to an expression is a GNU extension">, InGroup<GNU>;
+  "%0 applied to an expression is a GNU extension">, InGroup<GNUAlignofExpression>;
 
 def warn_microsoft_dependent_exists : Warning<
   "dependent %select{__if_not_exists|__if_exists}0 declarations are ignored">, 
@@ -119,17 +119,15 @@ def ext_c11_noreturn : Extension<
   "_Noreturn functions are a C11-specific feature">, InGroup<C11>;
 
 def ext_gnu_indirect_goto : Extension<
-  "use of GNU indirect-goto extension">, InGroup<GNU>;
+  "use of GNU indirect-goto extension">, InGroup<GNULabelsAsValue>;
 def ext_gnu_address_of_label : Extension<
-  "use of GNU address-of-label extension">, InGroup<GNU>;
-def ext_gnu_local_label : Extension<
-  "use of GNU locally declared label extension">, InGroup<GNU>;
+  "use of GNU address-of-label extension">, InGroup<GNULabelsAsValue>;
 def ext_gnu_statement_expr : Extension<
-  "use of GNU statement expression extension">, InGroup<GNU>;
+  "use of GNU statement expression extension">, InGroup<GNUStatementExpression>;
 def ext_gnu_conditional_expr : Extension<
-  "use of GNU ?: expression extension, eliding middle term">, InGroup<GNU>;
+  "use of GNU ?: conditional expression extension, omitting middle operand">, InGroup<GNUConditionalOmittedOperand>;
 def ext_gnu_empty_initializer : Extension<
-  "use of GNU empty initializer extension">, InGroup<GNU>;
+  "use of GNU empty initializer extension">, InGroup<GNUEmptyInitializer>;
 def ext_gnu_array_range : Extension<"use of GNU array range extension">, 
   InGroup<GNUDesignator>;
 def ext_gnu_missing_equal_designator : ExtWarn<
@@ -140,7 +138,7 @@ def ext_gnu_old_style_field_designator : ExtWarn<
   "use of GNU old-style field designator extension">, 
   InGroup<GNUDesignator>;
 def ext_gnu_case_range : Extension<"use of GNU case range extension">,
-  InGroup<GNU>;
+  InGroup<GNUCaseRange>;
 
 // Generic errors.
 def err_expected_expression : Error<"expected expression">;
@@ -169,10 +167,6 @@ def err_expected_member_name_or_semi : Error<
   "expected member name or ';' after declaration specifiers">;
 def err_function_declared_typedef : Error<
   "function definition declared 'typedef'">;
-def err_iboutletcollection_builtintype : Error<
-  "type argument of iboutletcollection attribute cannot be a builtin type">;
-def err_iboutletcollection_with_protocol : Error<
-  "invalid argument of iboutletcollection attribute">;
 def err_at_defs_cxx : Error<"@defs is not supported in Objective-C++">;
 def err_at_in_class : Error<"unexpected '@' in member specification">;
 
@@ -312,6 +306,8 @@ def err_unspecified_vla_size_with_static : Error<
 def warn_deprecated_register : Warning<
   "'register' storage class specifier is deprecated">,
   InGroup<DeprecatedRegister>;
+def err_expected_parentheses_around_typename : Error<
+  "expected parentheses around type name in %0 expression">;
 
 def err_expected_case_before_expression: Error<
   "expected 'case' keyword before expression">;
@@ -468,6 +464,10 @@ def err_expected_member_or_base_name : Error<
   "expected class member or base class name">;
 def err_expected_lbrace_after_base_specifiers : Error<
   "expected '{' after base class list">;
+def err_missing_end_of_definition : Error<
+  "missing '}' at end of definition of %0">;
+def note_missing_end_of_definition_before : Note<
+  "still within definition of %0 here">;
 def ext_ellipsis_exception_spec : Extension<
   "exception specification of '...' is a Microsoft extension">,
   InGroup<Microsoft>;
@@ -482,6 +482,8 @@ def err_expected_rbrace_or_comma : Error<"expected '}' or ','">;
 def err_expected_rsquare_or_comma : Error<"expected ']' or ','">;
 def err_using_namespace_in_class : Error<
   "'using namespace' is not allowed in classes">;
+def err_constructor_bad_name : Error<
+  "missing return type for function %0; did you mean the constructor name %1?">;
 def err_destructor_tilde_identifier : Error<
   "expected a class name after '~' to name a destructor">;
 def err_destructor_template_id : Error<
@@ -597,8 +599,8 @@ def err_explicit_instantiation_with_definition : Error<
     "definition is meant to be an explicit specialization, add '<>' after the "
     "'template' keyword">;
 def err_template_defn_explicit_instantiation : Error<
-  "%select{function|class}0 cannot be defined in an explicit instantiation; if this "
-  "declaration is meant to be a %select{function|class}0 definition, remove the 'template' keyword">;
+  "%select{function|class|variable}0 cannot be defined in an explicit instantiation; if this "
+  "declaration is meant to be a %select{function|class|variable}0 definition, remove the 'template' keyword">;
 def err_friend_explicit_instantiation : Error<
   "friend cannot be declared in an explicit instantiation; if this "
   "declaration is meant to be a friend declaration, remove the 'template' keyword">;
@@ -618,7 +620,7 @@ def warn_cxx98_compat_extern_template : Warning<
   InGroup<CXX98CompatPedantic>, DefaultIgnore;
 def warn_static_inline_explicit_inst_ignored : Warning<
   "ignoring '%select{static|inline}0' keyword on explicit template "
-  "instantiation">;
+  "instantiation">, InGroup<DiagGroup<"static-inline-explicit-instantiation">>;
   
 // Constructor template diagnostics.
 def err_out_of_line_constructor_template_id : Error<
@@ -702,6 +704,9 @@ def warn_cxx98_compat_override_control_keyword : Warning<
   InGroup<CXX98Compat>, DefaultIgnore;
 def err_override_control_interface : Error<
   "'%0' keyword not permitted with interface types">;
+def ext_ms_sealed_keyword : ExtWarn<
+  "'sealed' keyword is a Microsoft extension">,
+  InGroup<Microsoft>;
 
 def err_access_specifier_interface : Error<
   "interface types cannot specify '%select{private|protected}0' access">;

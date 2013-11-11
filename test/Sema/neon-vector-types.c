@@ -1,4 +1,5 @@
-// RUN: %clang_cc1 %s -fsyntax-only -verify
+// RUN: %clang_cc1 %s -triple armv7 -target-feature +neon -fsyntax-only -verify
+// RUN: %clang_cc1 %s -triple armv8 -target-feature +neon -fsyntax-only -verify
 
 typedef float float32_t;
 typedef signed char poly8_t;
@@ -19,7 +20,7 @@ typedef __attribute__((neon_polyvector_type(8)))  poly16_t poly16x8_t;
 typedef __attribute__((neon_vector_type(2, 4))) int only_one_arg; // expected-error{{'neon_vector_type' attribute takes one argument}}
 
 // The number of elements must be an ICE.
-typedef __attribute__((neon_vector_type(2.0))) int non_int_width; // expected-error{{attribute requires integer constant}}
+typedef __attribute__((neon_vector_type(2.0))) int non_int_width; // expected-error{{'neon_vector_type' attribute requires an integer constant}}
 
 // Only certain element types are allowed.
 typedef __attribute__((neon_vector_type(2))) double double_elt; // expected-error{{invalid vector element type}}

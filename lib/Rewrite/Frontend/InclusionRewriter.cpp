@@ -40,6 +40,7 @@ class InclusionRewriter : public PPCallbacks {
   Preprocessor &PP; ///< Used to find inclusion directives.
   SourceManager &SM; ///< Used to read and manage source files.
   raw_ostream &OS; ///< The destination stream for rewritten contents.
+  const llvm::MemoryBuffer *PredefinesBuffer; ///< The preprocessor predefines.
   bool ShowLineMarkers; ///< Show #line markers.
   bool UseLineDirective; ///< Use of line directives or line markers.
   typedef std::map<unsigned, FileChange> FileChangeMap;
@@ -50,6 +51,9 @@ class InclusionRewriter : public PPCallbacks {
 public:
   InclusionRewriter(Preprocessor &PP, raw_ostream &OS, bool ShowLineMarkers);
   bool Process(FileID FileId, SrcMgr::CharacteristicKind FileType);
+  void setPredefinesBuffer(const llvm::MemoryBuffer *Buf) {
+    PredefinesBuffer = Buf;
+  }
 private:
   virtual void FileChanged(SourceLocation Loc, FileChangeReason Reason,
                            SrcMgr::CharacteristicKind FileType,
@@ -89,7 +93,7 @@ private:
 /// Initializes an InclusionRewriter with a \p PP source and \p OS destination.
 InclusionRewriter::InclusionRewriter(Preprocessor &PP, raw_ostream &OS,
                                      bool ShowLineMarkers)
-    : PP(PP), SM(PP.getSourceManager()), OS(OS),
+    : PP(PP), SM(PP.getSourceManager()), OS(OS), PredefinesBuffer(0),
     ShowLineMarkers(ShowLineMarkers),
     LastInsertedFileChange(FileChanges.end()) {
   // If we're in microsoft mode, use normal #line instead of line markers.
@@ -106,11 +110,15 @@ void InclusionRewriter::WriteLineInfo(const char *Filename, int Line,
   if (!ShowLineMarkers)
     return;
   if (UseLineDirective) {
-    OS << "#line" << ' ' << Line << ' ' << '"' << Filename << '"';
+    OS << "#line" << ' ' << Line << ' ' << '"';
+    OS.write_escaped(Filename);
+    OS << '"';
   } else {
     // Use GNU linemarkers as described here:
     // http://gcc.gnu.org/onlinedocs/cpp/Preprocessor-Output.html
-    OS << '#' << ' ' << Line << ' ' << '"' << Filename << '"';
+    OS << '#' << ' ' << Line << ' ' << '"';
+    OS.write_escaped(Filename);
+    OS << '"';
     if (!Extra.empty())
       OS << Extra;
     if (FileType == SrcMgr::C_System)
@@ -214,6 +222,11 @@ void InclusionRewriter::OutputContentUpTo(const MemoryBuffer &FromFile,
                                           bool EnsureNewline) {
   if (WriteTo <= WriteFrom)
     return;
+  if (&FromFile == PredefinesBuffer) {
+    // Ignore the #defines of the predefines buffer.
+    WriteFrom = WriteTo;
+    return;
+  }
   OS.write(FromFile.getBufferStart() + WriteFrom, WriteTo - WriteFrom);
   // count lines manually, it's faster than getPresumedLoc()
   Line += std::count(FromFile.getBufferStart() + WriteFrom,
@@ -329,7 +342,7 @@ bool InclusionRewriter::HandleHasInclude(
   return true;
 }
 
-/// Use a raw lexer to analyze \p FileId, inccrementally copying parts of it
+/// Use a raw lexer to analyze \p FileId, incrementally copying parts of it
 /// and including content of included files recursively.
 bool InclusionRewriter::Process(FileID FileId,
                                 SrcMgr::CharacteristicKind FileType)
@@ -525,6 +538,8 @@ void clang::RewriteIncludesInInput(Preprocessor &PP, raw_ostream *OS,
   do {
     PP.Lex(Tok);
   } while (Tok.isNot(tok::eof));
+  Rewrite->setPredefinesBuffer(SM.getBuffer(PP.getPredefinesFileID()));
+  Rewrite->Process(PP.getPredefinesFileID(), SrcMgr::C_User);
   Rewrite->Process(SM.getMainFileID(), SrcMgr::C_User);
   OS->flush();
 }
