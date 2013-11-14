@@ -4929,7 +4929,7 @@ llvm::Constant *CGObjCCommonMac::GetMethodVarType(const ObjCMethodDecl *D,
   std::string TypeStr;
   unsigned EncodeOptions = 0;
   if (Extended)
-    EncodeOptions = ObjcEncodeBlockParameters | ObjcEncodeClassNamesFlag;
+      EncodeOptions = ASTContext::ObjcEncodeBlockParameters | ASTContext::ObjcEncodeClassNamesFlag;
   if (CGM.getContext().getObjCEncodingForMethodDecl(D, TypeStr, EncodeOptions))
     return 0;
 
