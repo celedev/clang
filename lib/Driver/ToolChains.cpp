@@ -460,7 +460,8 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
     // default platform.
     if (!OSXTarget.empty() && !iOSTarget.empty()) {
       if (getTriple().getArch() == llvm::Triple::arm ||
-          getTriple().getArch() == llvm::Triple::thumb)
+          getTriple().getArch() == llvm::Triple::thumb ||
+          getTriple().getArch() == llvm::Triple::aarch64)
         OSXTarget = "";
       else
         iOSTarget = "";
@@ -809,6 +810,8 @@ DerivedArgList *Darwin::TranslateArgs(const DerivedArgList &Args,
       DAL->AddJoinedArg(0, MArch, "armv7m");
     else if (Name == "armv7s")
       DAL->AddJoinedArg(0, MArch, "armv7s");
+    else if (Name == "arm64")
+      DAL->AddJoinedArg(0, MArch, "arm64");
 
     else
       llvm_unreachable("invalid Darwin arch");

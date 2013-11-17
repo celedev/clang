@@ -95,6 +95,7 @@ public:
     // version 1.6 onwards
     if (getKind() == GNUstep && getVersion() >= VersionTuple(1, 6)) {
       if (Arch == llvm::Triple::arm ||
+          Arch == llvm::Triple::aarch64 ||
           Arch == llvm::Triple::x86 ||
           Arch == llvm::Triple::x86_64)
         return false;

@@ -3427,6 +3427,9 @@ public:
     // GCC defines theses currently
     Builder.defineMacro("__aarch64__");
     Builder.defineMacro("__AARCH64EL__");
+    Builder.defineMacro("__arm64__");
+      
+    Builder.defineMacro("__LITTLE_ENDIAN__");
 
     // ACLE predefines. Many can only have one possible value on v8 AArch64.
 
@@ -5520,6 +5523,9 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
     return new HexagonTargetInfo(Triple);
 
   case llvm::Triple::aarch64:
+    if (Triple.isOSDarwin())
+      return new DarwinTargetInfo<AArch64TargetInfo>(Triple);
+          
     switch (os) {
     case llvm::Triple::Linux:
       return new LinuxTargetInfo<AArch64TargetInfo>(Triple);

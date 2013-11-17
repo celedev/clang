@@ -187,7 +187,7 @@ void InitHeaderSearch::AddGnuCPlusPlusIncludePaths(StringRef Base,
 
   // Add the multilib dirs
   llvm::Triple::ArchType arch = triple.getArch();
-  bool is64bit = arch == llvm::Triple::ppc64 || arch == llvm::Triple::x86_64;
+  bool is64bit = arch == llvm::Triple::ppc64 || arch == llvm::Triple::x86_64 || arch == llvm::Triple::aarch64;
   if (is64bit)
     AddPath(Base + "/" + ArchDir + "/" + Dir64, CXXSystem, false);
   else
@@ -371,6 +371,7 @@ AddDefaultCPlusPlusIncludePaths(const llvm::Triple &triple, const HeaderSearchOp
 
     case llvm::Triple::arm:
     case llvm::Triple::thumb:
+    case llvm::Triple::aarch64:
       AddGnuCPlusPlusIncludePaths("/usr/include/c++/4.2.1",
                                   "arm-apple-darwin10", "v7", "", triple);
       AddGnuCPlusPlusIncludePaths("/usr/include/c++/4.2.1",
