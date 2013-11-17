@@ -2,6 +2,7 @@ clang_CXCursorSet_contains
 clang_CXCursorSet_insert
 clang_CXIndex_getGlobalOptions
 clang_CXIndex_setGlobalOptions
+clang_CXIndex_setClangResourcePath
 clang_CXXMethod_isPureVirtual
 clang_CXXMethod_isStatic
 clang_CXXMethod_isVirtual
@@ -155,6 +156,7 @@ clang_getCursorSpelling
 clang_getCursorType
 clang_getCursorUSR
 clang_getDeclObjCTypeEncoding
+clang_getDeclObjCTypeExtendedEncoding
 clang_getDefinitionSpellingAndExtent
 clang_getDiagnostic
 clang_getDiagnosticCategory

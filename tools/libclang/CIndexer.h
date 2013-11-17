@@ -63,6 +63,7 @@ public:
 
   /// \brief Get the path of the clang resource files.
   const std::string &getClangResourcesPath();
+  void setClangResourcesPath(const std::string &clangResourcePath) { ResourcesPath = clangResourcePath; }
 };
 
   /// \brief Return the current size to request for "safety".

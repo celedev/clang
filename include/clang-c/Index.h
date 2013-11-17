@@ -273,6 +273,14 @@ CINDEX_LINKAGE void clang_CXIndex_setGlobalOptions(CXIndex, unsigned options);
 CINDEX_LINKAGE unsigned clang_CXIndex_getGlobalOptions(CXIndex);
 
 /**
+ * \brief Sets the builtin resources path associated with a CXIndex.
+ *
+ * \param resourcesPath The directory path where builtin resource files are located.
+ */
+CINDEX_LINKAGE void clang_CXIndex_setClangResourcePath(CXIndex, const char* resourcesPath);
+
+
+/**
  * \defgroup CINDEX_FILES File manipulation routines
  *
  * @{

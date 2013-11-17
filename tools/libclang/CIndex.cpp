@@ -2588,6 +2588,11 @@ unsigned clang_CXIndex_getGlobalOptions(CXIndex CIdx) {
     return static_cast<CIndexer *>(CIdx)->getCXGlobalOptFlags();
   return 0;
 }
+    
+void clang_CXIndex_setClangResourcePath(CXIndex CIdx, const char* resourcesPath)
+{
+    static_cast<CIndexer *>(CIdx)->setClangResourcesPath(resourcesPath);
+}
 
 void clang_toggleCrashRecovery(unsigned isEnabled) {
   if (isEnabled)
