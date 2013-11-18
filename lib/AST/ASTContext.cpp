@@ -5187,7 +5187,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
     if (const BuiltinType *BT = dyn_cast<BuiltinType>(CT)) {
       S += getObjCEncodingForPrimitiveKind(this, BT->getKind());
       if ((EncodeOptionsMask & ObjcEncodeBOOLTypedef) != 0)
-        if (isTypeTypedefedAsBOOL(T)) {
+        if (isTypeTypedefedAsBOOL(T) && (BT->getKind() != BuiltinType::Bool)) {
           S += "\"BOOL\"";
         }
     }
