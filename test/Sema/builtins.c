@@ -191,3 +191,14 @@ void test18() {
   ptr = __builtin___strlcpy_chk(dst, src, sizeof(src), sizeof(dst)); // expected-warning {{incompatible integer to pointer conversion}}
   ptr = __builtin___strlcat_chk(dst, src, sizeof(src), sizeof(dst)); // expected-warning {{incompatible integer to pointer conversion}}
 }
+
+void no_ms_builtins() {
+  __assume(1); // expected-warning {{implicit declaration}}
+  __noop(1); // expected-warning {{implicit declaration}}
+  __debugbreak(); // expected-warning {{implicit declaration}}
+}
+
+void unavailable() {
+  __builtin_operator_new(0); // expected-error {{'__builtin_operator_new' is only available in C++}}
+  __builtin_operator_delete(0); // expected-error {{'__builtin_operator_delete' is only available in C++}}
+}

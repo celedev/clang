@@ -49,6 +49,9 @@ public:
 
   /// \brief Write to \p Stream the result of applying all changes to the
   /// original buffer.
+  /// Note that it isn't safe to use this function to overwrite memory mapped
+  /// files in-place (PR17960). Consider using a higher-level utility such as
+  /// Rewriter::overwriteChangedFiles() instead.
   ///
   /// The original buffer is not actually changed.
   raw_ostream &write(raw_ostream &Stream) const;
@@ -148,7 +151,7 @@ public:
 
   explicit Rewriter(SourceManager &SM, const LangOptions &LO)
     : SourceMgr(&SM), LangOpts(&LO) {}
-  explicit Rewriter() : SourceMgr(0), LangOpts(0) {}
+  explicit Rewriter() : SourceMgr(nullptr), LangOpts(nullptr) {}
 
   void setSourceMgr(SourceManager &SM, const LangOptions &LO) {
     SourceMgr = &SM;
@@ -272,7 +275,7 @@ public:
   const RewriteBuffer *getRewriteBufferFor(FileID FID) const {
     std::map<FileID, RewriteBuffer>::const_iterator I =
       RewriteBuffers.find(FID);
-    return I == RewriteBuffers.end() ? 0 : &I->second;
+    return I == RewriteBuffers.end() ? nullptr : &I->second;
   }
 
   // Iterators over rewrite buffers.

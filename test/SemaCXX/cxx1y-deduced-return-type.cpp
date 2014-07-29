@@ -261,6 +261,13 @@ namespace DefaultedMethods {
 
 namespace Constexpr {
   constexpr auto f1(int n) { return n; }
+  template<typename T> struct X { constexpr auto f() {} }; // PR18746
+  template<typename T> struct Y { constexpr T f() {} }; // expected-note {{control reached end of constexpr function}}
+  void f() {
+    X<int>().f();
+    Y<void>().f();
+    constexpr int q = Y<int>().f(); // expected-error {{must be initialized by a constant expression}} expected-note {{in call to '&Y<int>()->f()'}}
+  }
   struct NonLiteral { ~NonLiteral(); } nl; // expected-note {{user-provided destructor}}
   constexpr auto f2(int n) { return nl; } // expected-error {{return type 'Constexpr::NonLiteral' is not a literal type}}
 }
@@ -456,4 +463,23 @@ auto foo(T x) -> decltype(x) {
 void bar() { puts("bar"); }
 int main() { return foo(0); }
 
+}
+
+namespace OverloadedOperators {
+  template<typename T> struct A {
+    auto operator()() { return T{}; }
+    auto operator[](int) { return T{}; }
+    auto operator+(int) { return T{}; }
+    auto operator+() { return T{}; }
+    friend auto operator-(A) { return T{}; }
+    friend auto operator-(A, A) { return T{}; }
+  };
+  void f(A<int> a) {
+    int b = a();
+    int c = a[0];
+    int d = a + 0;
+    int e = +a;
+    int f = -a;
+    int g = a - a;
+  }
 }
