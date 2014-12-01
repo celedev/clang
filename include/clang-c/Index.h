@@ -3032,6 +3032,13 @@ enum CXObjcEncodeOptions {
   CXObjcEncodeIncompleteArrayAsArray   = 1 << 6,
   
   /**
+   * \brief Encode the type name of anonymous structs referenced via a typedef
+   *
+   * Example: "typedef struct { double x; double y; } Position;" A Position parameter is encoded as {?=dd}"Position" (instead of {?=dd})
+   */
+  CXObjcEncodeAnonymousStructTypeName  = 1 << 7,
+  
+  /**
    * \brief For functions and methods, this flag disables the generation of offsets in the signature
    *
    * Example: the method -(id)foo:(int)param is encoded as @@:i (instead of @12@0:4i8)

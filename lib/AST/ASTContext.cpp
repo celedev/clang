@@ -4833,7 +4833,7 @@ std::string ASTContext::getObjCEncodingForBlock(const BlockExpr *Expr,
   }
   
   // Argument types.
-  ParmOffset = PtrSize;
+  CharUnits ParmOffset = PtrSize;
   for (auto PVDecl : Decl->params()) {
     QualType PType = PVDecl->getOriginalType(); 
     if (const ArrayType *AT =
@@ -5399,7 +5399,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
       
       S += '<';
       // Function return type
-      getObjCEncodingForTypeImpl(FT->getResultType(), S,
+      getObjCEncodingForTypeImpl(FT->getReturnType(), S,
                                  ExpandPointedToStructures, ExpandStructures,
                                  FD,
                                  false /* OutermostType */,
@@ -5408,9 +5408,8 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
                                  EncodeOptionsMask);
       // Function parameters
       if (const FunctionProtoType *FPT = dyn_cast<FunctionProtoType>(FT)) {
-        for (FunctionProtoType::arg_type_iterator I = FPT->arg_type_begin(),
-             E = FPT->arg_type_end(); I && (I != E); ++I) {
-          getObjCEncodingForTypeImpl(*I, S,
+        for (const auto &I : FPT->param_types())
+          getObjCEncodingForTypeImpl(I, S,
                                      ExpandPointedToStructures,
                                      ExpandStructures,
                                      FD,
@@ -5418,7 +5417,6 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
                                      EncodingProperty,
                                      false /* StructField */,
                                      EncodeOptionsMask);
-        }
       }
       S += '>';
     }
@@ -5427,6 +5425,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
 
   case Type::Record: {
     RecordDecl *RDecl = cast<RecordType>(CT)->getDecl();
+    bool isAnonymousStruct = false;
     S += RDecl->isUnion() ? '(' : '{';
     // Anonymous structures print as '?'
     if (const IdentifierInfo *II = RDecl->getIdentifier()) {
@@ -5442,6 +5441,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
       }
     } else {
       S += '?';
+      isAnonymousStruct = true;
     }
     if (ExpandStructures) {
       S += '=';
@@ -5471,6 +5471,16 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
       }
     }
     S += RDecl->isUnion() ? ')' : '}';
+    
+    if (isAnonymousStruct && ((EncodeOptionsMask & ObjcEncodeAnonymousStructTypeName) != 0))
+      // Add a type name annotation
+      if (const TypedefType *TT = dyn_cast<TypedefType>(T))
+        if (IdentifierInfo *II = TT->getDecl()->getIdentifier()) {
+          S += '"';
+          S += II->getNameStart();
+          S += '"';
+        }
+  
     return;
   }
 

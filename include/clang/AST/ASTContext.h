@@ -1373,7 +1373,8 @@ public:
     ObjcEncodeFunctionParameters       = 1 << 3,
     ObjcEncodeBOOLTypedef              = 1 << 4,
     ObjcEncodePointerTypedef           = 1 << 5,
-    ObjcEncodeIncompleteArrayAsArray   = 1 << 6
+    ObjcEncodeIncompleteArrayAsArray   = 1 << 6,
+    ObjcEncodeAnonymousStructTypeName  = 1 << 7
   };
   
   /// \brief Emit the Objective-CC type encoding for the given type \p T into
@@ -1386,7 +1387,8 @@ public:
 
   /// \brief Emit the Objective-C property type encoding for the given
   /// type \p T into \p S.
-  void getObjCEncodingForPropertyType(QualType T, std::string &S) const;
+    void getObjCEncodingForPropertyType(QualType T, std::string &S,
+                                        unsigned EncodeOptionsMask = 0 /* mask of ObjcEncodeOptions */) const;
 
   void getLegacyIntegralTypeEncoding(QualType &t) const;
 
