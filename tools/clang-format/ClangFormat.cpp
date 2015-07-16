@@ -19,9 +19,9 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Version.h"
 #include "clang/Format/Format.h"
-#include "clang/Lex/Lexer.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Signals.h"
@@ -76,7 +76,7 @@ static cl::opt<std::string>
 AssumeFilename("assume-filename",
                cl::desc("When reading from stdin, clang-format assumes this\n"
                         "filename to look for a style config file (with\n"
-                        "-style=file)."),
+                        "-style=file) and to determine the language."),
                cl::cat(ClangFormatCategory));
 
 static cl::opt<bool> Inplace("i",
@@ -225,12 +225,18 @@ static bool format(StringRef FileName) {
 
   FormatStyle FormatStyle = getStyle(
       Style, (FileName == "-") ? AssumeFilename : FileName, FallbackStyle);
-  Lexer Lex(ID, Sources.getBuffer(ID), Sources,
-            getFormattingLangOpts(FormatStyle.Standard));
-  tooling::Replacements Replaces = reformat(FormatStyle, Lex, Sources, Ranges);
+  bool IncompleteFormat = false;
+  tooling::Replacements Replaces =
+      reformat(FormatStyle, Sources, ID, Ranges, &IncompleteFormat);
   if (OutputXML) {
-    llvm::outs()
-        << "<?xml version='1.0'?>\n<replacements xml:space='preserve'>\n";
+    llvm::outs() << "<?xml version='1.0'?>\n<replacements "
+                    "xml:space='preserve' incomplete_format='"
+                 << (IncompleteFormat ? "true" : "false") << "'>\n";
+    if (Cursor.getNumOccurrences() != 0)
+      llvm::outs() << "<cursor>"
+                   << tooling::shiftedCodePosition(Replaces, Cursor)
+                   << "</cursor>\n";
+
     for (tooling::Replacements::const_iterator I = Replaces.begin(),
                                                E = Replaces.end();
          I != E; ++I) {
@@ -245,12 +251,16 @@ static bool format(StringRef FileName) {
     Rewriter Rewrite(Sources, LangOptions());
     tooling::applyAllReplacements(Replaces, Rewrite);
     if (Inplace) {
-      if (Rewrite.overwriteChangedFiles())
+      if (FileName == "-")
+        llvm::errs() << "error: cannot use -i when reading from stdin.\n";
+      else if (Rewrite.overwriteChangedFiles())
         return true;
     } else {
       if (Cursor.getNumOccurrences() != 0)
         outs() << "{ \"Cursor\": "
-               << tooling::shiftedCodePosition(Replaces, Cursor) << " }\n";
+               << tooling::shiftedCodePosition(Replaces, Cursor)
+               << ", \"IncompleteFormat\": "
+               << (IncompleteFormat ? "true" : "false") << " }\n";
       Rewrite.getEditBuffer(ID).write(outs());
     }
   }
@@ -268,15 +278,7 @@ static void PrintVersion() {
 int main(int argc, const char **argv) {
   llvm::sys::PrintStackTraceOnErrorSignal();
 
-  // Hide unrelated options.
-  StringMap<cl::Option*> Options;
-  cl::getRegisteredOptions(Options);
-  for (StringMap<cl::Option *>::iterator I = Options.begin(), E = Options.end();
-       I != E; ++I) {
-    if (I->second->Category != &ClangFormatCategory && I->first() != "help" &&
-        I->first() != "version")
-      I->second->setHiddenFlag(cl::ReallyHidden);
-  }
+  cl::HideUnrelatedOptions(ClangFormatCategory);
 
   cl::SetVersionPrinter(PrintVersion);
   cl::ParseCommandLineOptions(

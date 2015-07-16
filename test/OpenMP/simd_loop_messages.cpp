@@ -1,7 +1,8 @@
-// RUN: %clang_cc1 -fsyntax-only -fopenmp=libiomp5 -x c++ -std=c++11 -fexceptions -fcxx-exceptions -verify %s
+// RUN: %clang_cc1 -fsyntax-only -fopenmp -x c++ -std=c++11 -fexceptions -fcxx-exceptions -verify %s
 
 static int sii;
-#pragma omp threadprivate(sii) // expected-note {{defined as threadprivate or thread local}}
+#pragma omp threadprivate(sii)
+static int globalii;
 
 int test_iteration_spaces() {
   const int N = 100;
@@ -251,10 +252,24 @@ int test_iteration_spaces() {
 
   #pragma omp parallel
   {
-    // expected-error@+2 {{loop iteration variable in the associated loop of 'omp simd' directive may not be threadprivate or thread local, predetermined as linear}}
     #pragma omp simd
     for (sii = 0; sii < 10; sii+=1)
       c[sii] = a[sii];
+  }
+
+  #pragma omp parallel
+  {
+    #pragma omp simd
+    for (globalii = 0; globalii < 10; globalii+=1)
+      c[globalii] = a[globalii];
+  }
+
+  #pragma omp parallel
+  {
+#pragma omp simd collapse(2)
+    for (ii = 0; ii < 10; ii += 1)
+    for (globalii = 0; globalii < 10; globalii += 1)
+      c[globalii] += a[globalii] + ii;
   }
 
   // expected-error@+2 {{statement after '#pragma omp simd' must be a for loop}}
@@ -300,8 +315,10 @@ class Iter0 {
     Iter0(const Iter0 &) { }
     Iter0 operator ++() { return *this; }
     Iter0 operator --() { return *this; }
+    Iter0 operator + (int delta) { return *this; }
     bool operator <(Iter0 a) { return true; }
 };
+// expected-note@+1 2 {{candidate function not viable: no known conversion from 'Iter1' to 'Iter0' for 1st argument}}
 int operator -(Iter0 a, Iter0 b) { return 0; }
 class Iter1 {
   public:
@@ -330,10 +347,14 @@ class GoodIter {
     typedef int difference_type;
     typedef std::random_access_iterator_tag iterator_category;
 };
+// expected-note@+1 2 {{candidate function not viable: no known conversion from 'Iter1' to 'GoodIter' for 1st argument}}
 int operator -(GoodIter a, GoodIter b) { return 0; }
+// expected-note@+1 2 {{candidate function not viable: requires single argument 'a', but 2 arguments were provided}}
 GoodIter operator -(GoodIter a) { return a; }
+// expected-note@+1 2 {{candidate function not viable: no known conversion from 'Iter1' to 'GoodIter' for 1st argument}}
 GoodIter operator -(GoodIter a, int v) { return GoodIter(); }
 GoodIter operator +(GoodIter a, int v) { return GoodIter(); }
+// expected-note@+1 2 {{candidate function not viable: no known conversion from 'Iter1' to 'int' for 1st argument}}
 GoodIter operator -(int v, GoodIter a) { return GoodIter(); }
 GoodIter operator +(int v, GoodIter a) { return GoodIter(); }
 
@@ -370,7 +391,7 @@ int test_with_random_access_iterator() {
   for (begin = GoodIter(0); begin < end; ++begin)
     ++begin;
   #pragma omp simd
-  for (begin = begin0; begin < end; ++begin)
+  for (begin = GoodIter(1,2); begin < end; ++begin)
     ++begin;
   // expected-error@+2 {{initialization clause of OpenMP for loop must be of the form 'var = init' or 'T var = init'}}
   #pragma omp simd
@@ -415,12 +436,16 @@ int test_with_random_access_iterator() {
   #pragma omp simd
   for (Iter0 I = begin0; I < end0; ++I)
     ++I;
+
   // Initializer is constructor without params.
   // expected-warning@+2 {{initialization clause of OpenMP for loop is not in canonical form ('var = init' or 'T var = init')}}
   #pragma omp simd
   for (Iter0 I; I < end0; ++I)
     ++I;
+
   Iter1 begin1, end1;
+  // expected-error@+3 {{invalid operands to binary expression ('Iter1' and 'Iter1')}}
+  // expected-error@+2 {{could not calculate number of iterations calling 'operator-' with upper and lower loop bounds}}
   #pragma omp simd
   for (Iter1 I = begin1; I < end1; ++I)
     ++I;
@@ -429,11 +454,15 @@ int test_with_random_access_iterator() {
   #pragma omp simd
   for (Iter1 I = begin1; I >= end1; ++I)
     ++I;
+
   // Initializer is constructor with all default params.
+  // expected-error@+4 {{invalid operands to binary expression ('Iter1' and 'Iter1')}}
+  // expected-error@+3 {{could not calculate number of iterations calling 'operator-' with upper and lower loop bounds}}
   // expected-warning@+2 {{initialization clause of OpenMP for loop is not in canonical form ('var = init' or 'T var = init')}}
   #pragma omp simd
   for (Iter1 I; I < end1; ++I) {
   }
+
   return 0;
 }
 

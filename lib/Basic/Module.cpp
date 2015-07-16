@@ -25,14 +25,14 @@
 using namespace clang;
 
 Module::Module(StringRef Name, SourceLocation DefinitionLoc, Module *Parent,
-               const FileEntry *File, bool IsFramework, bool IsExplicit)
-    : Name(Name), DefinitionLoc(DefinitionLoc), Parent(Parent), ModuleMap(File),
-      Umbrella(), ASTFile(nullptr), IsMissingRequirement(false),
-      IsAvailable(true), IsFromModuleFile(false), IsFramework(IsFramework),
-      IsExplicit(IsExplicit), IsSystem(false), IsExternC(false),
-      IsInferred(false), InferSubmodules(false), InferExplicitSubmodules(false),
-      InferExportWildcard(false), ConfigMacrosExhaustive(false),
-      NameVisibility(Hidden) {
+               bool IsFramework, bool IsExplicit, unsigned VisibilityID)
+    : Name(Name), DefinitionLoc(DefinitionLoc), Parent(Parent), Directory(),
+      Umbrella(), Signature(0), ASTFile(nullptr), VisibilityID(VisibilityID),
+      IsMissingRequirement(false), IsAvailable(true), IsFromModuleFile(false),
+      IsFramework(IsFramework), IsExplicit(IsExplicit), IsSystem(false),
+      IsExternC(false), IsInferred(false), InferSubmodules(false),
+      InferExplicitSubmodules(false), InferExportWildcard(false),
+      ConfigMacrosExhaustive(false), NameVisibility(Hidden) {
   if (Parent) {
     if (!Parent->isAvailable())
       IsAvailable = false;
@@ -58,21 +58,26 @@ Module::~Module() {
 /// language options has the given feature.
 static bool hasFeature(StringRef Feature, const LangOptions &LangOpts,
                        const TargetInfo &Target) {
-  return llvm::StringSwitch<bool>(Feature)
-           .Case("altivec", LangOpts.AltiVec)
-           .Case("blocks", LangOpts.Blocks)
-           .Case("cplusplus", LangOpts.CPlusPlus)
-           .Case("cplusplus11", LangOpts.CPlusPlus11)
-           .Case("objc", LangOpts.ObjC1)
-           .Case("objc_arc", LangOpts.ObjCAutoRefCount)
-           .Case("opencl", LangOpts.OpenCL)
-           .Case("tls", Target.isTLSSupported())
-           .Default(Target.hasFeature(Feature));
+  bool HasFeature = llvm::StringSwitch<bool>(Feature)
+                        .Case("altivec", LangOpts.AltiVec)
+                        .Case("blocks", LangOpts.Blocks)
+                        .Case("cplusplus", LangOpts.CPlusPlus)
+                        .Case("cplusplus11", LangOpts.CPlusPlus11)
+                        .Case("objc", LangOpts.ObjC1)
+                        .Case("objc_arc", LangOpts.ObjCAutoRefCount)
+                        .Case("opencl", LangOpts.OpenCL)
+                        .Case("tls", Target.isTLSSupported())
+                        .Default(Target.hasFeature(Feature));
+  if (!HasFeature)
+    HasFeature = std::find(LangOpts.ModuleFeatures.begin(),
+                           LangOpts.ModuleFeatures.end(),
+                           Feature) != LangOpts.ModuleFeatures.end();
+  return HasFeature;
 }
 
-bool
-Module::isAvailable(const LangOptions &LangOpts, const TargetInfo &Target,
-                    Requirement &Req, HeaderDirective &MissingHeader) const {
+bool Module::isAvailable(const LangOptions &LangOpts, const TargetInfo &Target,
+                         Requirement &Req,
+                         UnresolvedHeaderDirective &MissingHeader) const {
   if (IsAvailable)
     return true;
 
@@ -133,11 +138,11 @@ std::string Module::getFullModuleName() const {
   return Result;
 }
 
-const DirectoryEntry *Module::getUmbrellaDir() const {
-  if (const FileEntry *Header = getUmbrellaHeader())
-    return Header->getDir();
+Module::DirectoryName Module::getUmbrellaDir() const {
+  if (Header U = getUmbrellaHeader())
+    return {"", U.Entry->getDir()};
   
-  return Umbrella.dyn_cast<const DirectoryEntry *>();
+  return {UmbrellaAsWritten, Umbrella.dyn_cast<const DirectoryEntry *>()};
 }
 
 ArrayRef<const FileEntry *> Module::getTopHeaders(FileManager &FileMgr) {
@@ -151,6 +156,19 @@ ArrayRef<const FileEntry *> Module::getTopHeaders(FileManager &FileMgr) {
   }
 
   return llvm::makeArrayRef(TopHeaders.begin(), TopHeaders.end());
+}
+
+bool Module::directlyUses(const Module *Requested) const {
+  auto *Top = getTopLevelModule();
+
+  // A top-level module implicitly uses itself.
+  if (Requested->isSubModuleOf(Top))
+    return true;
+
+  for (auto *Use : Top->DirectUses)
+    if (Requested->isSubModuleOf(Use))
+      return true;
+  return false;
 }
 
 void Module::addRequirement(StringRef Feature, bool RequiredState,
@@ -293,9 +311,12 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS << "explicit ";
   OS << "module " << Name;
 
-  if (IsSystem) {
+  if (IsSystem || IsExternC) {
     OS.indent(Indent + 2);
-    OS << " [system]";
+    if (IsSystem)
+      OS << " [system]";
+    if (IsExternC)
+      OS << " [extern_c]";
   }
 
   OS << " {\n";
@@ -313,15 +334,15 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS << "\n";
   }
   
-  if (const FileEntry *UmbrellaHeader = getUmbrellaHeader()) {
+  if (Header H = getUmbrellaHeader()) {
     OS.indent(Indent + 2);
     OS << "umbrella header \"";
-    OS.write_escaped(UmbrellaHeader->getName());
+    OS.write_escaped(H.NameAsWritten);
     OS << "\"\n";
-  } else if (const DirectoryEntry *UmbrellaDir = getUmbrellaDir()) {
+  } else if (DirectoryName D = getUmbrellaDir()) {
     OS.indent(Indent + 2);
     OS << "umbrella \"";
-    OS.write_escaped(UmbrellaDir->getName());
+    OS.write_escaped(D.NameAsWritten);
     OS << "\"\n";    
   }
 
@@ -338,30 +359,31 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS << "\n";
   }
 
-  for (unsigned I = 0, N = NormalHeaders.size(); I != N; ++I) {
-    OS.indent(Indent + 2);
-    OS << "header \"";
-    OS.write_escaped(NormalHeaders[I]->getName());
-    OS << "\"\n";
+  struct {
+    StringRef Prefix;
+    HeaderKind Kind;
+  } Kinds[] = {{"", HK_Normal},
+               {"textual ", HK_Textual},
+               {"private ", HK_Private},
+               {"private textual ", HK_PrivateTextual},
+               {"exclude ", HK_Excluded}};
+
+  for (auto &K : Kinds) {
+    for (auto &H : Headers[K.Kind]) {
+      OS.indent(Indent + 2);
+      OS << K.Prefix << "header \"";
+      OS.write_escaped(H.NameAsWritten);
+      OS << "\"\n";
+    }
   }
 
-  for (unsigned I = 0, N = ExcludedHeaders.size(); I != N; ++I) {
-    OS.indent(Indent + 2);
-    OS << "exclude header \"";
-    OS.write_escaped(ExcludedHeaders[I]->getName());
-    OS << "\"\n";
-  }
-
-  for (unsigned I = 0, N = PrivateHeaders.size(); I != N; ++I) {
-    OS.indent(Indent + 2);
-    OS << "private header \"";
-    OS.write_escaped(PrivateHeaders[I]->getName());
-    OS << "\"\n";
-  }
-  
   for (submodule_const_iterator MI = submodule_begin(), MIEnd = submodule_end();
        MI != MIEnd; ++MI)
-    if (!(*MI)->IsInferred)
+    // Print inferred subframework modules so that we don't need to re-infer
+    // them (requires expensive directory iteration + stat calls) when we build
+    // the module. Regular inferred submodules are OK, as we need to look at all
+    // those header files anyway.
+    if (!(*MI)->IsInferred || (*MI)->IsFramework)
       (*MI)->print(OS, Indent + 2);
   
   for (unsigned I = 0, N = Exports.size(); I != N; ++I) {
@@ -453,4 +475,47 @@ void Module::dump() const {
   print(llvm::errs());
 }
 
+void VisibleModuleSet::setVisible(Module *M, SourceLocation Loc,
+                                  VisibleCallback Vis, ConflictCallback Cb) {
+  if (isVisible(M))
+    return;
 
+  ++Generation;
+
+  struct Visiting {
+    Module *M;
+    Visiting *ExportedBy;
+  };
+
+  std::function<void(Visiting)> VisitModule = [&](Visiting V) {
+    // Modules that aren't available cannot be made visible.
+    if (!V.M->isAvailable())
+      return;
+
+    // Nothing to do for a module that's already visible.
+    unsigned ID = V.M->getVisibilityID();
+    if (ImportLocs.size() <= ID)
+      ImportLocs.resize(ID + 1);
+    else if (ImportLocs[ID].isValid())
+      return;
+
+    ImportLocs[ID] = Loc;
+    Vis(M);
+
+    // Make any exported modules visible.
+    SmallVector<Module *, 16> Exports;
+    V.M->getExportedModules(Exports);
+    for (Module *E : Exports)
+      VisitModule({E, &V});
+
+    for (auto &C : V.M->Conflicts) {
+      if (isVisible(C.Other)) {
+        llvm::SmallVector<Module*, 8> Path;
+        for (Visiting *I = &V; I; I = I->ExportedBy)
+          Path.push_back(I->M);
+        Cb(Path, C.Other, C.Message);
+      }
+    }
+  };
+  VisitModule({M, nullptr});
+}

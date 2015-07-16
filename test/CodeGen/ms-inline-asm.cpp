@@ -63,8 +63,8 @@ struct T4 {
 // CHECK-LABEL: define void @_ZN2T44testEv(
 void T4::test() {
 // CHECK: [[T0:%.*]] = alloca [[T4:%.*]]*,
-// CHECK: [[THIS:%.*]] = load [[T4]]** [[T0]]
-// CHECK: [[X:%.*]] = getelementptr inbounds [[T4]]* [[THIS]], i32 0, i32 0
+// CHECK: [[THIS:%.*]] = load [[T4]]*, [[T4]]** [[T0]]
+// CHECK: [[X:%.*]] = getelementptr inbounds [[T4]], [[T4]]* [[THIS]], i32 0, i32 0
   __asm mov eax, x;
   __asm mov y, eax;
 // CHECK: call void asm sideeffect inteldialect "mov eax, dword ptr $1\0A\09mov dword ptr $0, eax", "=*m,*m,~{eax},~{dirflag},~{fpsr},~{flags}"(i32* @_ZN2T41yE, i32* {{.*}})
@@ -82,7 +82,7 @@ void test5() {
   __asm push y
   __asm call T5<int>::create<float>
   __asm mov x, eax
-  // CHECK: call void asm sideeffect inteldialect "push dword ptr $0\0A\09call $2\0A\09mov dword ptr $1, eax", "=*m,=*m,r,~{esp},~{dirflag},~{fpsr},~{flags}"(i32* %y, i32* %x, i32 (float)* @_ZN2T5IiE6createIfEEiT_)
+  // CHECK: call void asm sideeffect inteldialect "push dword ptr $0\0A\09call dword ptr $2\0A\09mov dword ptr $1, eax", "=*m,=*m,*m,~{esp},~{dirflag},~{fpsr},~{flags}"(i32* %y, i32* %x, i32 (float)* @_ZN2T5IiE6createIfEEiT_)
 }
 
 // Just verify this doesn't emit an error.
@@ -122,3 +122,20 @@ void t7_using() {
   // CHECK-LABEL: define void @_Z8t7_usingv
   // CHECK: call void asm sideeffect inteldialect "mov eax, [eax].4", "~{eax},~{dirflag},~{fpsr},~{flags}"()
 }
+
+void t8() {
+  __asm some_label:
+  // CHECK-LABEL: define void @_Z2t8v()
+  // CHECK: call void asm sideeffect inteldialect "L__MSASMLABEL_.1__some_label:", "~{dirflag},~{fpsr},~{flags}"()
+  struct A {
+    static void g() {
+      __asm jmp some_label ; This should jump forwards
+      __asm some_label:
+      __asm nop
+      // CHECK-LABEL: define internal void @_ZZ2t8vEN1A1gEv()
+      // CHECK: call void asm sideeffect inteldialect "jmp L__MSASMLABEL_.2__some_label\0A\09L__MSASMLABEL_.2__some_label:\0A\09nop", "~{dirflag},~{fpsr},~{flags}"()
+    }
+  };
+  A::g();
+}
+

@@ -213,7 +213,7 @@ class FlushRewrittenFilesTest : public ::testing::Test {
 public:
    FlushRewrittenFilesTest() {}
 
-  ~FlushRewrittenFilesTest() {
+   ~FlushRewrittenFilesTest() override {
     for (llvm::StringMap<std::string>::iterator I = TemporaryFiles.begin(),
                                                 E = TemporaryFiles.end();
          I != E; ++I) {
@@ -237,7 +237,8 @@ public:
     const FileEntry *File = Context.Files.getFile(Path);
     assert(File != nullptr);
 
-    StringRef Found = TemporaryFiles.GetOrCreateValue(Name, Path.str()).second;
+    StringRef Found =
+        TemporaryFiles.insert(std::make_pair(Name, Path.str())).first->second;
     assert(Found == Path);
     (void)Found;
     return Context.Sources.createFileID(File, SourceLocation(), SrcMgr::C_User);
@@ -251,9 +252,8 @@ public:
     // descriptor, which might not see the changes made.
     // FIXME: Figure out whether there is a way to get the SourceManger to
     // reopen the file.
-    std::unique_ptr<const llvm::MemoryBuffer> FileBuffer(
-        Context.Files.getBufferForFile(Path, nullptr));
-    return FileBuffer->getBuffer();
+    auto FileBuffer = Context.Files.getBufferForFile(Path);
+    return (*FileBuffer)->getBuffer();
   }
 
   llvm::StringMap<std::string> TemporaryFiles;
@@ -281,13 +281,14 @@ public:
 
 protected:
   clang::SourceManager *SM;
+  clang::ASTContext *Context;
 
 private:
   class FindConsumer : public clang::ASTConsumer {
   public:
     FindConsumer(TestVisitor *Visitor) : Visitor(Visitor) {}
 
-    virtual void HandleTranslationUnit(clang::ASTContext &Context) {
+    void HandleTranslationUnit(clang::ASTContext &Context) override {
       Visitor->TraverseDecl(Context.getTranslationUnitDecl());
     }
 
@@ -299,11 +300,13 @@ private:
   public:
     TestAction(TestVisitor *Visitor) : Visitor(Visitor) {}
 
-    virtual clang::ASTConsumer* CreateASTConsumer(
-        clang::CompilerInstance& compiler, llvm::StringRef dummy) {
+    std::unique_ptr<clang::ASTConsumer>
+    CreateASTConsumer(clang::CompilerInstance &compiler,
+                      llvm::StringRef dummy) override {
       Visitor->SM = &compiler.getSourceManager();
+      Visitor->Context = &compiler.getASTContext();
       /// TestConsumer will be deleted by the framework calling us.
-      return new FindConsumer(Visitor);
+      return llvm::make_unique<FindConsumer>(Visitor);
     }
 
   private:
@@ -367,6 +370,29 @@ TEST(Replacement, TemplatedFunctionCall) {
   expectReplacementAt(CallToF.Replace, "input.cc", 43, 8);
 }
 
+class NestedNameSpecifierAVisitor
+    : public TestVisitor<NestedNameSpecifierAVisitor> {
+public:
+  bool TraverseNestedNameSpecifierLoc(NestedNameSpecifierLoc NNSLoc) {
+    if (NNSLoc.getNestedNameSpecifier()) {
+      if (const NamespaceDecl* NS = NNSLoc.getNestedNameSpecifier()->getAsNamespace()) {
+        if (NS->getName() == "a") {
+          Replace = Replacement(*SM, &NNSLoc, "", Context->getLangOpts());
+        }
+      }
+    }
+    return TestVisitor<NestedNameSpecifierAVisitor>::TraverseNestedNameSpecifierLoc(
+        NNSLoc);
+  }
+  Replacement Replace;
+};
+
+TEST(Replacement, ColonColon) {
+  NestedNameSpecifierAVisitor VisitNNSA;
+  EXPECT_TRUE(VisitNNSA.runOver("namespace a { void f() { ::a::f(); } }"));
+  expectReplacementAt(VisitNNSA.Replace, "input.cc", 25, 5);
+}
+
 TEST(Range, overlaps) {
   EXPECT_TRUE(Range(10, 10).overlapsWith(Range(0, 11)));
   EXPECT_TRUE(Range(0, 11).overlapsWith(Range(10, 10)));
@@ -392,6 +418,8 @@ TEST(DeduplicateTest, removesDuplicates) {
   Input.push_back(Replacement("fileA", 50, 0, " foo ")); // Duplicate
   Input.push_back(Replacement("fileA", 51, 3, " bar "));
   Input.push_back(Replacement("fileB", 51, 3, " bar ")); // Filename differs!
+  Input.push_back(Replacement("fileB", 60, 1, " bar "));
+  Input.push_back(Replacement("fileA", 60, 2, " bar "));
   Input.push_back(Replacement("fileA", 51, 3, " moo ")); // Replacement text
                                                          // differs!
 
@@ -402,12 +430,14 @@ TEST(DeduplicateTest, removesDuplicates) {
   Expected.push_back(Replacement("fileA", 50, 0, " foo "));
   Expected.push_back(Replacement("fileA", 51, 3, " bar "));
   Expected.push_back(Replacement("fileA", 51, 3, " moo "));
-  Expected.push_back(Replacement("fileB", 51, 3, " bar "));
+  Expected.push_back(Replacement("fileB", 60, 1, " bar "));
+  Expected.push_back(Replacement("fileA", 60, 2, " bar "));
 
   std::vector<Range> Conflicts; // Ignored for this test
   deduplicate(Input, Conflicts);
 
-  ASSERT_TRUE(Expected == Input);
+  EXPECT_EQ(3U, Conflicts.size());
+  EXPECT_EQ(Expected, Input);
 }
 
 TEST(DeduplicateTest, detectsConflicts) {
