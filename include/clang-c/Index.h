@@ -2908,6 +2908,22 @@ CINDEX_LINKAGE CXType clang_getCursorType(CXCursor C);
 CINDEX_LINKAGE CXString clang_getTypeSpelling(CXType CT);
 
 /**
+ * \brief Pretty-print the underlying type with all type attributes removed using the rules of the
+ * language of the translation unit from which it came.
+ *
+ * If the type is invalid, an empty string is returned.
+ */
+CINDEX_LINKAGE   CXString clang_getUnattributedTypeSpelling(CXType CT);
+    
+/**
+ * \brief Retrieve the underlying type of a typedef type.
+ *
+ * If the input type is not a typedef type (CXType_Typedef), an invalid type is
+ * returned.
+ */
+CINDEX_LINKAGE CXType clang_getTypedefUnderlyingType(CXType CT);
+
+/**
  * \brief Retrieve the underlying type of a typedef declaration.
  *
  * If the cursor does not reference a typedef declaration, an invalid type is
@@ -3196,6 +3212,14 @@ enum CXObjcEncodeOptions {
    * Example: "typedef struct { double x; double y; } Position;" A Position parameter is encoded as {?=dd}"Position" (instead of {?=dd})
    */
   CXObjcEncodeAnonymousStructTypeName  = 1 << 7,
+  
+  /**
+   * \brief Encode the nullability attribute of function paramaters if defined
+   * ('Z' for non-nullable, 'z' for nullable)
+   *
+   * Example: 
+   */
+  CXObjcEncodeNullabilityAttribute = 1 << 8,
   
   /**
    * \brief For functions and methods, this flag disables the generation of offsets in the signature

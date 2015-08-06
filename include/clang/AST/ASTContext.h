@@ -1450,7 +1450,8 @@ public:
     ObjcEncodeBOOLTypedef              = 1 << 4,
     ObjcEncodePointerTypedef           = 1 << 5,
     ObjcEncodeIncompleteArrayAsArray   = 1 << 6,
-    ObjcEncodeAnonymousStructTypeName  = 1 << 7
+    ObjcEncodeAnonymousStructTypeName  = 1 << 7,
+    ObjcEncodeNullabilityAttribute     = 1 << 8,
   };
   
   /// \brief Emit the Objective-CC type encoding for the given type \p T into

@@ -63,11 +63,37 @@ static CXTypeKind GetBuiltinTypeKind(const BuiltinType *BT) {
 #undef BTCASE
 }
 
+static void stripOuterNullabilityOfTypePtr(const Type * &TP) {
+  if (TP && (TP->getTypeClass() == Type::Attributed)) {
+    if (auto attributed = dyn_cast<AttributedType>(TP)) {
+      if (attributed->getImmediateNullability()) {
+        // Attributed type with nullability attribute: return the type kind of the modified type
+        TP = attributed->getModifiedType().getTypePtrOrNull();
+      }
+    }
+  }
+}
+
+static void stripOuterNullabilityOfQualType(QualType &T) {
+  const Type* TP = T.getTypePtrOrNull();
+  if (TP && (TP->getTypeClass() == Type::Attributed)) {
+    if (auto attributed = dyn_cast<AttributedType>(TP)) {
+      if (attributed->getImmediateNullability()) {
+        // Attributed type with nullability attribute: return the type kind of the modified type
+        T = attributed->getModifiedType();
+      }
+    }
+  }
+}
+
 static CXTypeKind GetTypeKind(QualType T) {
   const Type *TP = T.getTypePtrOrNull();
+  
+  stripOuterNullabilityOfTypePtr(TP);
+  
   if (!TP)
     return CXType_Invalid;
-
+  
 #define TKCASE(K) case Type::K: return CXType_##K
   switch (TP->getTypeClass()) {
     case Type::Builtin:
@@ -233,6 +259,21 @@ CXString clang_getTypeSpelling(CXType CT) {
   return cxstring::createDup(OS.str());
 }
 
+CXString clang_getUnattributedTypeSpelling(CXType CT) {
+  QualType T = GetQualType(CT);
+  
+  // Get the unattributed modified type
+  const Type* TP = T.getTypePtrOrNull();
+  while (! T.isNull() && TP && (TP->getTypeClass() == Type::Attributed)) {
+    if (auto attributed = dyn_cast<AttributedType>(TP)) {
+      T = attributed->getModifiedType();
+      TP = T.getTypePtrOrNull();
+    }
+  }
+
+  return clang_getTypeSpelling(clang::cxtype::MakeCXType(T, GetTU(CT)));
+}
+
 CXType clang_getTypedefDeclUnderlyingType(CXCursor C) {
   using namespace cxcursor;
   CXTranslationUnit TU = cxcursor::getCursorTU(C);
@@ -333,11 +374,13 @@ CXType clang_getCanonicalType(CXType CT) {
 
 unsigned clang_isConstQualifiedType(CXType CT) {
   QualType T = GetQualType(CT);
+  stripOuterNullabilityOfQualType(T);
   return T.isLocalConstQualified();
 }
 
 unsigned clang_isVolatileQualifiedType(CXType CT) {
   QualType T = GetQualType(CT);
+  stripOuterNullabilityOfQualType(T);
   return T.isLocalVolatileQualified();
 }
 
@@ -349,6 +392,8 @@ unsigned clang_isRestrictQualifiedType(CXType CT) {
 CXType clang_getPointeeType(CXType CT) {
   QualType T = GetQualType(CT);
   const Type *TP = T.getTypePtrOrNull();
+  
+  stripOuterNullabilityOfTypePtr(TP);
   
   if (!TP)
     return MakeCXType(QualType(), GetTU(CT));
@@ -376,6 +421,27 @@ CXType clang_getPointeeType(CXType CT) {
   }
   return MakeCXType(T, GetTU(CT));
 }
+  
+CXType clang_getTypedefUnderlyingType(CXType CT)
+{
+  if (CT.kind != CXType_Typedef)
+    return MakeCXType(QualType(), GetTU(CT));
+  
+  QualType T = GetQualType(CT);
+  const Type *TP = T.getTypePtrOrNull();
+  
+  stripOuterNullabilityOfTypePtr(TP);
+  
+  if (TP && (TP->getTypeClass() == Type::Typedef)) {
+    TypedefNameDecl *D = dyn_cast<TypedefNameDecl>(dyn_cast<TypedefType>(TP)->getDecl());
+    if(D)
+      return MakeCXType(D->getUnderlyingType(), GetTU(CT));
+  }
+  
+  return MakeCXType(QualType(), GetTU(CT));
+}
+  
+
 
 CXCursor clang_getTypeDeclaration(CXType CT) {
   if (CT.kind == CXType_Invalid)
@@ -384,6 +450,8 @@ CXCursor clang_getTypeDeclaration(CXType CT) {
   QualType T = GetQualType(CT);
   const Type *TP = T.getTypePtrOrNull();
 
+  stripOuterNullabilityOfTypePtr(TP);
+  
   if (!TP)
     return cxcursor::MakeCXCursorInvalid(CXCursor_NoDeclFound);
 
@@ -606,6 +674,8 @@ CXType clang_getElementType(CXType CT) {
   QualType T = GetQualType(CT);
   const Type *TP = T.getTypePtrOrNull();
 
+  stripOuterNullabilityOfTypePtr(TP);
+  
   if (TP) {
     switch (TP->getTypeClass()) {
     case Type::ConstantArray:
@@ -638,6 +708,8 @@ long long clang_getNumElements(CXType CT) {
   QualType T = GetQualType(CT);
   const Type *TP = T.getTypePtrOrNull();
 
+  stripOuterNullabilityOfTypePtr(TP);
+  
   if (TP) {
     switch (TP->getTypeClass()) {
     case Type::ConstantArray:
@@ -658,6 +730,8 @@ CXType clang_getArrayElementType(CXType CT) {
   QualType T = GetQualType(CT);
   const Type *TP = T.getTypePtrOrNull();
 
+  stripOuterNullabilityOfTypePtr(TP);
+  
   if (TP) {
     switch (TP->getTypeClass()) {
     case Type::ConstantArray:
@@ -684,6 +758,8 @@ long long clang_getArraySize(CXType CT) {
   QualType T = GetQualType(CT);
   const Type *TP = T.getTypePtrOrNull();
 
+  stripOuterNullabilityOfTypePtr(TP);
+  
   if (TP) {
     switch (TP->getTypeClass()) {
     case Type::ConstantArray:

@@ -5455,6 +5455,18 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
                                             bool StructField,
                                             unsigned EncodeOptionsMask,
                                             QualType *NotEncodedT) const {
+  // Strip the nullability attribute for T and add an optional nullability qualifier
+  QualType originalType = T;
+  Optional<NullabilityKind> nullabilityKind = AttributedType::stripOuterNullability(T);
+  if (nullabilityKind && ((EncodeOptionsMask & ObjcEncodeNullabilityAttribute) != 0)) {
+    if (*nullabilityKind == NullabilityKind::NonNull) {
+      S += 'Z';
+    }
+    else if (*nullabilityKind == NullabilityKind::Nullable) {
+      S += 'z';
+    }
+  }
+  
   CanQualType CT = getCanonicalType(T);
   switch (CT->getTypeClass()) {
   case Type::Builtin:
@@ -5703,6 +5715,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
     S += "@?"; // Unlike a pointer-to-function, which is "^?".
     if ((EncodeOptionsMask & ObjcEncodeBlockParameters) != 0) {
       const FunctionType *FT = BT->getPointeeType()->castAs<FunctionType>();
+      unsigned blockEncodeOptionsMask = EncodeOptionsMask & ~ObjcEncodeNullabilityAttribute; // do not encode nullability attributes inside block pointers
       
       S += '<';
       // Block return type
@@ -5712,7 +5725,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
                                  false /* OutermostType */, 
                                  EncodingProperty, 
                                  false /* StructField */,
-                                 EncodeOptionsMask,
+                                 blockEncodeOptionsMask,
                                  NotEncodedT);
       // Block self
       S += "@?";
@@ -5722,7 +5735,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
           getObjCEncodingForTypeImpl(
               I, S, ExpandPointedToStructures, ExpandStructures, FD,
               false /* OutermostType */, EncodingProperty,
-              false /* StructField */, EncodeOptionsMask, NotEncodedT);
+              false /* StructField */, blockEncodeOptionsMask, NotEncodedT);
       }
       S += '>';
     }
@@ -5850,7 +5863,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
   case Type::ExtVector:
   // Until we have a coherent encoding of these three types, issue warning.
     { if (NotEncodedT)
-        *NotEncodedT = T;
+        *NotEncodedT = originalType;
       return;
     }
       
