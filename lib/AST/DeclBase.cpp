@@ -364,9 +364,13 @@ static AvailabilityResult CheckAvailability(ASTContext &Context,
   }
 
   StringRef TargetPlatform = Context.getTargetInfo().getPlatformName();
+  
+  // Handle the fact that tvos iherits from the ios platform
+  
 
   // Match the platform name.
-  if (RealizedPlatform != TargetPlatform)
+  if ((RealizedPlatform != TargetPlatform) 
+      && !((TargetPlatform == "tvos") && (RealizedPlatform == "ios"))) // As availabilty attributes for ios also apply to tvos
     return AR_Available;
 
   StringRef PrettyPlatformName

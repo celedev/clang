@@ -1192,6 +1192,8 @@ def mios_version_min_EQ : Joined<["-"], "mios-version-min=">,
   Alias<miphoneos_version_min_EQ>, HelpText<"Set iOS deployment target">;
 def mios_simulator_version_min_EQ : Joined<["-"], "mios-simulator-version-min=">, Alias<miphoneos_version_min_EQ>;
 def miphonesimulator_version_min_EQ : Joined<["-"], "miphonesimulator-version-min=">, Alias<miphoneos_version_min_EQ>;
+def mappletvos_version_min_EQ : Joined<["-"], "mappletvos-version-min=">, Group<m_Group>;
+def mtvos_version_min_EQ : Joined<["-"], "mtvos-version-min=">, Alias<mappletvos_version_min_EQ>;
 def mkernel : Flag<["-"], "mkernel">, Group<m_Group>;
 def mlinker_version_EQ : Joined<["-"], "mlinker-version=">,
   Flags<[DriverOption]>;

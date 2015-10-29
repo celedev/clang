@@ -447,6 +447,7 @@ def Availability : InheritableAttr {
              .Case("macosx", "OS X")
              .Case("ios_app_extension", "iOS (App Extension)")
              .Case("macosx_app_extension", "OS X (App Extension)")
+             .Case("tvos", "Apple TV OS")
              .Default(llvm::StringRef());
 } }];
   let HasCustomParsing = 1;

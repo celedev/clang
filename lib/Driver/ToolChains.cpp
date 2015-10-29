@@ -177,7 +177,7 @@ std::string Darwin::ComputeEffectiveClangTriple(const ArgList &Args,
     return Triple.getTriple();
 
   SmallString<16> Str;
-  Str += isTargetIOSBased() ? "ios" : "macosx";
+  Str += isTargetAppleTVOS() ? "tvos" : isTargetIOSBased() ? "ios" : "macosx";
   Str += getTargetVersion().getAsString();
   Triple.setOSName(Str);
 
@@ -257,6 +257,8 @@ void DarwinClang::AddLinkARCArgs(const ArgList &Args,
     P += "iphonesimulator";
   else if (isTargetIPhoneOS())
     P += "iphoneos";
+  else if (isTargetAppleTVOS())
+    P += "appletvos";
   else
     P += "macosx";
   P += ".a";
@@ -441,12 +443,13 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
 
   Arg *OSXVersion = Args.getLastArg(options::OPT_mmacosx_version_min_EQ);
   Arg *iOSVersion = Args.getLastArg(options::OPT_miphoneos_version_min_EQ);
+  Arg *AppleTVOSVersion = Args.getLastArg(options::OPT_mappletvos_version_min_EQ);
 
   if (OSXVersion && iOSVersion) {
     getDriver().Diag(diag::err_drv_argument_not_allowed_with)
         << OSXVersion->getAsString(Args) << iOSVersion->getAsString(Args);
     iOSVersion = nullptr;
-  } else if (!OSXVersion && !iOSVersion) {
+  } else if (!OSXVersion && !iOSVersion && !AppleTVOSVersion) {
     // If no deployment target was specified on the command line, check for
     // environment defines.
     std::string OSXTarget;
@@ -532,6 +535,8 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
     Platform = MacOS;
   else if (iOSVersion)
     Platform = IPhoneOS;
+  else if (AppleTVOSVersion)
+    Platform = AppleTVOS;
   else
     llvm_unreachable("Unable to infer Darwin variant");
 
@@ -552,6 +557,13 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
         HadExtra || Major >= 10 || Minor >= 100 || Micro >= 100)
       getDriver().Diag(diag::err_drv_invalid_version_number)
           << iOSVersion->getAsString(Args);
+  } else if (Platform == AppleTVOS) {
+    assert(AppleTVOSVersion && "Unknown target platform!");
+    if (!Driver::GetReleaseVersion(AppleTVOSVersion->getValue(), Major, Minor, Micro,
+                                   HadExtra) ||
+        HadExtra || Major >= 10 || Minor >= 100 || Micro >= 100)
+      getDriver().Diag(diag::err_drv_invalid_version_number)
+      << AppleTVOSVersion->getAsString(Args);
   } else
     llvm_unreachable("unknown kind of Darwin platform");
 
@@ -974,9 +986,9 @@ void Darwin::addStartObjectFileArgs(const ArgList &Args,
   // Derived from startfile spec.
   if (Args.hasArg(options::OPT_dynamiclib)) {
     // Derived from darwin_dylib1 spec.
-    if (isTargetIOSSimulator()) {
+    if (isTargetIOSSimulator() || isTargetAppleTVSimulator()) {
       ; // iOS simulator does not need dylib1.o.
-    } else if (isTargetIPhoneOS()) {
+    } else if (isTargetIPhoneOS() || isTargetAppleTVOS()) {
       if (isIPhoneOSVersionLT(3, 1))
         CmdArgs.push_back("-ldylib1.o");
     } else {
@@ -989,9 +1001,9 @@ void Darwin::addStartObjectFileArgs(const ArgList &Args,
     if (Args.hasArg(options::OPT_bundle)) {
       if (!Args.hasArg(options::OPT_static)) {
         // Derived from darwin_bundle1 spec.
-        if (isTargetIOSSimulator()) {
+        if (isTargetIOSSimulator() || isTargetAppleTVSimulator()) {
           ; // iOS simulator does not need bundle1.o.
-        } else if (isTargetIPhoneOS()) {
+        } else if (isTargetIPhoneOS() || isTargetAppleTVOS()) {
           if (isIPhoneOSVersionLT(3, 1))
             CmdArgs.push_back("-lbundle1.o");
         } else {
@@ -1024,9 +1036,9 @@ void Darwin::addStartObjectFileArgs(const ArgList &Args,
           CmdArgs.push_back("-lcrt0.o");
         } else {
           // Derived from darwin_crt1 spec.
-          if (isTargetIOSSimulator()) {
+          if (isTargetIOSSimulator() || isTargetAppleTVSimulator()) {
             ; // iOS simulator does not need crt1.o.
-          } else if (isTargetIPhoneOS()) {
+          } else if (isTargetIPhoneOS() || isTargetAppleTVOS()) {
             if (getArch() == llvm::Triple::aarch64)
               ; // iOS does not need any crt1 files for arm64
             else if (isIPhoneOSVersionLT(3, 1))

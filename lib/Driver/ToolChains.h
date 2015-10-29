@@ -307,7 +307,7 @@ public:
   // the argument translation business.
   mutable bool TargetInitialized;
 
-  enum DarwinPlatformKind { MacOS, IPhoneOS, IPhoneOSSimulator };
+  enum DarwinPlatformKind { MacOS, IPhoneOS, IPhoneOSSimulator, AppleTVOS, AppleTVSimulator };
 
   mutable DarwinPlatformKind TargetPlatform;
 
@@ -371,10 +371,20 @@ protected:
     assert(TargetInitialized && "Target not initialized!");
     return TargetPlatform == IPhoneOSSimulator;
   }
+  
+  bool isTargetAppleTVOS() const {
+    assert(TargetInitialized && "Target not initialized!");
+    return TargetPlatform == AppleTVOS;
+  }
 
+  bool isTargetAppleTVSimulator() const {
+    assert(TargetInitialized && "Target not initialized!");
+    return TargetPlatform == AppleTVSimulator;
+  }
+  
   bool isTargetIOSBased() const {
     assert(TargetInitialized && "Target not initialized!");
-    return isTargetIPhoneOS() || isTargetIOSSimulator();
+    return isTargetIPhoneOS() || isTargetIOSSimulator() || isTargetAppleTVOS() || isTargetAppleTVSimulator();
   }
 
   bool isTargetMacOS() const {

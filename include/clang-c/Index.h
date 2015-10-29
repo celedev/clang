@@ -2467,7 +2467,7 @@ typedef struct CXPlatformAvailability {
    * \brief A string that describes the platform for which this structure
    * provides availability information.
    *
-   * Possible values are "ios" or "macosx".
+   * Possible values are "ios" or "macosx" or "tvos".
    */
   CXString Platform;
   /**
