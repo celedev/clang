@@ -42,10 +42,17 @@ If you find a bug in Clang, please file it in the LLVM bug tracker:
 Notes:
 
 - `-j 8`: parallel compilation with 8 jobs simultaneously (adapt it for your machine CPU)
-- If you get an error "fatal error: 'libxml/parser.h' file not found", make sure that libxml2 is available in /usr/include:
+- You need to have make accessible from the command line. If the cmake command is not found, download make for macOS, and create symbolic links for `make` and `cmakexbuild` in /usr/local/bin
 
-		> sudo ln -s /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.9.sdk/usr/include/libxml2 /usr/include
-		> make
+		> cd /usr/local
+		> sudo ln -s /Applications/CMake.app/Contents/bin/cmake .
+		> sudo ln -s /Applications/CMake.app/Contents/bin/cmakexbuild . 
+
+- If you get an error "'libxml/parser.h' file not found", make sure that libxml2 is installed in `/usr/include`. If not, or if `/usr/include` does not exist, run the following command:
+
+		> xcode-select --install
+	
+	This will install various command-line tools for Xcode, including libxml2.
 
 3) Create an Xcode project for llvm
 
