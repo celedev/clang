@@ -25,67 +25,77 @@
 namespace clang {
 namespace format {
 
+#define LIST_TOKEN_TYPES \
+  TYPE(ArrayInitializerLSquare) \
+  TYPE(ArraySubscriptLSquare) \
+  TYPE(AttributeParen) \
+  TYPE(BinaryOperator) \
+  TYPE(BitFieldColon) \
+  TYPE(BlockComment) \
+  TYPE(CastRParen) \
+  TYPE(ConditionalExpr) \
+  TYPE(ConflictAlternative) \
+  TYPE(ConflictEnd) \
+  TYPE(ConflictStart) \
+  TYPE(CtorInitializerColon) \
+  TYPE(CtorInitializerComma) \
+  TYPE(DesignatedInitializerPeriod) \
+  TYPE(DictLiteral) \
+  TYPE(ForEachMacro) \
+  TYPE(FunctionAnnotationRParen) \
+  TYPE(FunctionDeclarationName) \
+  TYPE(FunctionLBrace) \
+  TYPE(FunctionTypeLParen) \
+  TYPE(ImplicitStringLiteral) \
+  TYPE(InheritanceColon) \
+  TYPE(InlineASMBrace) \
+  TYPE(InlineASMColon) \
+  TYPE(JavaAnnotation) \
+  TYPE(JsComputedPropertyName) \
+  TYPE(JsFatArrow) \
+  TYPE(JsTypeColon) \
+  TYPE(JsTypeOperator) \
+  TYPE(JsTypeOptionalQuestion) \
+  TYPE(LambdaArrow) \
+  TYPE(LambdaLSquare) \
+  TYPE(LeadingJavaAnnotation) \
+  TYPE(LineComment) \
+  TYPE(MacroBlockBegin) \
+  TYPE(MacroBlockEnd) \
+  TYPE(ObjCBlockLBrace) \
+  TYPE(ObjCBlockLParen) \
+  TYPE(ObjCDecl) \
+  TYPE(ObjCForIn) \
+  TYPE(ObjCMethodExpr) \
+  TYPE(ObjCMethodSpecifier) \
+  TYPE(ObjCProperty) \
+  TYPE(ObjCStringLiteral) \
+  TYPE(OverloadedOperator) \
+  TYPE(OverloadedOperatorLParen) \
+  TYPE(PointerOrReference) \
+  TYPE(PureVirtualSpecifier) \
+  TYPE(RangeBasedForLoopColon) \
+  TYPE(RegexLiteral) \
+  TYPE(SelectorName) \
+  TYPE(StartOfName) \
+  TYPE(TemplateCloser) \
+  TYPE(TemplateOpener) \
+  TYPE(TemplateString) \
+  TYPE(TrailingAnnotation) \
+  TYPE(TrailingReturnArrow) \
+  TYPE(TrailingUnaryOperator) \
+  TYPE(UnaryOperator) \
+  TYPE(Unknown)
+
 enum TokenType {
-  TT_ArrayInitializerLSquare,
-  TT_ArraySubscriptLSquare,
-  TT_AttributeParen,
-  TT_BinaryOperator,
-  TT_BitFieldColon,
-  TT_BlockComment,
-  TT_CastRParen,
-  TT_ConditionalExpr,
-  TT_ConflictAlternative,
-  TT_ConflictEnd,
-  TT_ConflictStart,
-  TT_CtorInitializerColon,
-  TT_CtorInitializerComma,
-  TT_DesignatedInitializerPeriod,
-  TT_DictLiteral,
-  TT_ForEachMacro,
-  TT_FunctionAnnotationRParen,
-  TT_FunctionDeclarationName,
-  TT_FunctionLBrace,
-  TT_FunctionTypeLParen,
-  TT_ImplicitStringLiteral,
-  TT_InheritanceColon,
-  TT_InlineASMBrace,
-  TT_InlineASMColon,
-  TT_JavaAnnotation,
-  TT_JsComputedPropertyName,
-  TT_JsFatArrow,
-  TT_JsTypeColon,
-  TT_JsTypeOptionalQuestion,
-  TT_LambdaArrow,
-  TT_LambdaLSquare,
-  TT_LeadingJavaAnnotation,
-  TT_LineComment,
-  TT_MacroBlockBegin,
-  TT_MacroBlockEnd,
-  TT_ObjCBlockLBrace,
-  TT_ObjCBlockLParen,
-  TT_ObjCDecl,
-  TT_ObjCForIn,
-  TT_ObjCMethodExpr,
-  TT_ObjCMethodSpecifier,
-  TT_ObjCProperty,
-  TT_ObjCStringLiteral,
-  TT_OverloadedOperator,
-  TT_OverloadedOperatorLParen,
-  TT_PointerOrReference,
-  TT_PureVirtualSpecifier,
-  TT_RangeBasedForLoopColon,
-  TT_RegexLiteral,
-  TT_SelectorName,
-  TT_StartOfName,
-  TT_TemplateCloser,
-  TT_TemplateOpener,
-  TT_TemplateString,
-  TT_TrailingAnnotation,
-  TT_TrailingReturnArrow,
-  TT_TrailingUnaryOperator,
-  TT_UnaryOperator,
-  TT_Unknown
+#define TYPE(X) TT_##X,
+LIST_TOKEN_TYPES
+#undef TYPE
+  NUM_TOKEN_TYPES
 };
+
+/// \brief Determines the name of a token type.
+const char *getTokenTypeName(TokenType Type);
 
 // Represents what type of block a set of braces open.
 enum BraceBlockKind { BK_Unknown, BK_Block, BK_BracedInit };
@@ -135,7 +145,7 @@ struct FormatToken {
   /// \brief Whether the token text contains newlines (escaped or not).
   bool IsMultiline = false;
 
-  /// \brief Indicates that this is the first token.
+  /// \brief Indicates that this is the first token of the file.
   bool IsFirst = false;
 
   /// \brief Whether there must be a line break before this token.
@@ -239,9 +249,9 @@ struct FormatToken {
   /// with the same precedence, contains the 0-based operator index.
   unsigned OperatorIndex = 0;
 
-  /// \brief Is this the last operator (or "."/"->") in a sequence of operators
-  /// with the same precedence?
-  bool LastOperator = false;
+  /// \brief If this is an operator (or "."/"->") in a sequence of operators
+  /// with the same precedence, points to the next operator.
+  FormatToken *NextOperator = nullptr;
 
   /// \brief Is this token part of a \c DeclStmt defining multiple variables?
   ///
@@ -274,6 +284,10 @@ struct FormatToken {
   bool is(const IdentifierInfo *II) const {
     return II && II == Tok.getIdentifierInfo();
   }
+  bool is(tok::PPKeywordKind Kind) const {
+    return Tok.getIdentifierInfo() &&
+           Tok.getIdentifierInfo()->getPPKeywordID() == Kind;
+  }
   template <typename A, typename B> bool isOneOf(A K1, B K2) const {
     return is(K1) || is(K2);
   }
@@ -282,6 +296,20 @@ struct FormatToken {
     return is(K1) || isOneOf(K2, Ks...);
   }
   template <typename T> bool isNot(T Kind) const { return !is(Kind); }
+
+  /// \c true if this token starts a sequence with the given tokens in order,
+  /// following the ``Next`` pointers, ignoring comments.
+  template <typename A, typename... Ts>
+  bool startsSequence(A K1, Ts... Tokens) const {
+    return startsSequenceInternal(K1, Tokens...);
+  }
+
+  /// \c true if this token ends a sequence with the given tokens in order,
+  /// following the ``Previous`` pointers, ignoring comments.
+  template <typename A, typename... Ts>
+  bool endsSequence(A K1, Ts... Tokens) const {
+    return endsSequenceInternal(K1, Tokens...);
+  }
 
   bool isStringLiteral() const { return tok::isStringLiteral(Tok.getKind()); }
 
@@ -399,22 +427,50 @@ struct FormatToken {
 
   /// \brief Returns \c true if this tokens starts a block-type list, i.e. a
   /// list that should be indented with a block indent.
-  bool opensBlockTypeList(const FormatStyle &Style) const {
+  bool opensBlockOrBlockTypeList(const FormatStyle &Style) const {
     return is(TT_ArrayInitializerLSquare) ||
            (is(tok::l_brace) &&
             (BlockKind == BK_Block || is(TT_DictLiteral) ||
              (!Style.Cpp11BracedListStyle && NestingLevel == 0)));
   }
 
-  /// \brief Same as opensBlockTypeList, but for the closing token.
-  bool closesBlockTypeList(const FormatStyle &Style) const {
-    return MatchingParen && MatchingParen->opensBlockTypeList(Style);
+  /// \brief Same as opensBlockOrBlockTypeList, but for the closing token.
+  bool closesBlockOrBlockTypeList(const FormatStyle &Style) const {
+    return MatchingParen && MatchingParen->opensBlockOrBlockTypeList(Style);
   }
 
 private:
   // Disallow copying.
   FormatToken(const FormatToken &) = delete;
   void operator=(const FormatToken &) = delete;
+
+  template <typename A, typename... Ts>
+  bool startsSequenceInternal(A K1, Ts... Tokens) const {
+    if (is(tok::comment) && Next)
+      return Next->startsSequenceInternal(K1, Tokens...);
+    return is(K1) && Next && Next->startsSequenceInternal(Tokens...);
+  }
+
+  template <typename A>
+  bool startsSequenceInternal(A K1) const {
+    if (is(tok::comment) && Next)
+      return Next->startsSequenceInternal(K1);
+    return is(K1);
+  }
+
+  template <typename A, typename... Ts>
+  bool endsSequenceInternal(A K1) const {
+    if (is(tok::comment) && Previous)
+      return Previous->endsSequenceInternal(K1);
+    return is(K1);
+  }
+
+  template <typename A, typename... Ts>
+  bool endsSequenceInternal(A K1, Ts... Tokens) const {
+    if (is(tok::comment) && Previous)
+      return Previous->endsSequenceInternal(K1, Tokens...);
+    return is(K1) && Previous && Previous->endsSequenceInternal(Tokens...);
+  }
 };
 
 class ContinuationIndenter;
@@ -512,20 +568,30 @@ private:
 /// properly supported by Clang's lexer.
 struct AdditionalKeywords {
   AdditionalKeywords(IdentifierTable &IdentTable) {
+    kw_final = &IdentTable.get("final");
+    kw_override = &IdentTable.get("override");
     kw_in = &IdentTable.get("in");
+    kw_of = &IdentTable.get("of");
     kw_CF_ENUM = &IdentTable.get("CF_ENUM");
     kw_CF_OPTIONS = &IdentTable.get("CF_OPTIONS");
     kw_NS_ENUM = &IdentTable.get("NS_ENUM");
     kw_NS_OPTIONS = &IdentTable.get("NS_OPTIONS");
 
+    kw_as = &IdentTable.get("as");
+    kw_async = &IdentTable.get("async");
+    kw_await = &IdentTable.get("await");
     kw_finally = &IdentTable.get("finally");
+    kw_from = &IdentTable.get("from");
     kw_function = &IdentTable.get("function");
     kw_import = &IdentTable.get("import");
+    kw_is = &IdentTable.get("is");
+    kw_let = &IdentTable.get("let");
     kw_var = &IdentTable.get("var");
+    kw_yield = &IdentTable.get("yield");
 
     kw_abstract = &IdentTable.get("abstract");
+    kw_assert = &IdentTable.get("assert");
     kw_extends = &IdentTable.get("extends");
-    kw_final = &IdentTable.get("final");
     kw_implements = &IdentTable.get("implements");
     kw_instanceof = &IdentTable.get("instanceof");
     kw_interface = &IdentTable.get("interface");
@@ -537,6 +603,7 @@ struct AdditionalKeywords {
 
     kw_mark = &IdentTable.get("mark");
 
+    kw_extend = &IdentTable.get("extend");
     kw_option = &IdentTable.get("option");
     kw_optional = &IdentTable.get("optional");
     kw_repeated = &IdentTable.get("repeated");
@@ -544,12 +611,16 @@ struct AdditionalKeywords {
     kw_returns = &IdentTable.get("returns");
 
     kw_signals = &IdentTable.get("signals");
+    kw_qsignals = &IdentTable.get("Q_SIGNALS");
     kw_slots = &IdentTable.get("slots");
     kw_qslots = &IdentTable.get("Q_SLOTS");
   }
 
   // Context sensitive keywords.
+  IdentifierInfo *kw_final;
+  IdentifierInfo *kw_override;
   IdentifierInfo *kw_in;
+  IdentifierInfo *kw_of;
   IdentifierInfo *kw_CF_ENUM;
   IdentifierInfo *kw_CF_OPTIONS;
   IdentifierInfo *kw_NS_ENUM;
@@ -557,15 +628,22 @@ struct AdditionalKeywords {
   IdentifierInfo *kw___except;
 
   // JavaScript keywords.
+  IdentifierInfo *kw_as;
+  IdentifierInfo *kw_async;
+  IdentifierInfo *kw_await;
   IdentifierInfo *kw_finally;
+  IdentifierInfo *kw_from;
   IdentifierInfo *kw_function;
   IdentifierInfo *kw_import;
+  IdentifierInfo *kw_is;
+  IdentifierInfo *kw_let;
   IdentifierInfo *kw_var;
+  IdentifierInfo *kw_yield;
 
   // Java keywords.
   IdentifierInfo *kw_abstract;
+  IdentifierInfo *kw_assert;
   IdentifierInfo *kw_extends;
-  IdentifierInfo *kw_final;
   IdentifierInfo *kw_implements;
   IdentifierInfo *kw_instanceof;
   IdentifierInfo *kw_interface;
@@ -578,6 +656,7 @@ struct AdditionalKeywords {
   IdentifierInfo *kw_mark;
 
   // Proto keywords.
+  IdentifierInfo *kw_extend;
   IdentifierInfo *kw_option;
   IdentifierInfo *kw_optional;
   IdentifierInfo *kw_repeated;
@@ -586,6 +665,7 @@ struct AdditionalKeywords {
 
   // QT keywords.
   IdentifierInfo *kw_signals;
+  IdentifierInfo *kw_qsignals;
   IdentifierInfo *kw_slots;
   IdentifierInfo *kw_qslots;
 };

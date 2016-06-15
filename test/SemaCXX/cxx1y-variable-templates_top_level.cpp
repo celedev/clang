@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -verify -fsyntax-only -Wno-c++11-extensions -Wno-c++1y-extensions %s -DPRECXX11
+// RUN: %clang_cc1 -std=c++98 -verify -fsyntax-only -Wno-c++11-extensions -Wno-c++1y-extensions %s -DPRECXX11
 // RUN: %clang_cc1 -std=c++11 -verify -fsyntax-only -Wno-c++1y-extensions %s
 // RUN: %clang_cc1 -std=c++1y -verify -fsyntax-only %s
 
@@ -90,16 +90,16 @@ namespace odr_tmpl {
   }
 
   namespace pvt_diff_params {
-    template<typename T, typename> T v;   // expected-note {{previous template declaration is here}}
-    template<typename T> T v;   // expected-error {{too few template parameters in template redeclaration}} expected-note {{previous template declaration is here}}
+    template<typename T, typename> T v;   // expected-note 2{{previous template declaration is here}}
+    template<typename T> T v;   // expected-error {{too few template parameters in template redeclaration}}
     template<typename T, typename, typename> T v; // expected-error {{too many template parameters in template redeclaration}}
   }
 
   namespace pvt_extern {
     template<typename T> T v = T();
     template<typename T> extern T v;      // redeclaration is allowed \
-                                          // expected-note {{previous definition is here}}
-    template<typename T> extern int v;    // expected-error {{redefinition of 'v' with a different type: 'int' vs 'T'}}
+                                          // expected-note {{previous declaration is here}}
+    template<typename T> extern int v;    // expected-error {{redeclaration of 'v' with a different type: 'int' vs 'T'}}
 
 #ifndef PRECXX11
     template<typename T> extern auto v;   // expected-error {{declaration of variable 'v' with type 'auto' requires an initializer}}
@@ -117,7 +117,7 @@ namespace odr_tmpl {
     template<typename T> auto v2 = T();  // expected-note {{previous definition is here}}
     template<typename T> T v2;   // expected-error {{redefinition of 'v2'}}
     template<typename T> auto v3 = T();   // expected-note {{previous definition is here}}
-    template<typename T> extern T v3;     // expected-error {{redefinition of 'v3' with a different type: 'T' vs 'auto'}}
+    template<typename T> extern T v3;     // expected-error {{redeclaration of 'v3' with a different type: 'T' vs 'auto'}}
     template<typename T> auto v4 = T();
     template<typename T> extern auto v4;   // expected-error {{declaration of variable 'v4' with type 'auto' requires an initializer}}
   }
@@ -458,3 +458,9 @@ namespace PR19169 {
   template<> int g<double>; // expected-error {{no variable template matches specialization; did you mean to use 'g' as function template instead?}}
 }
 
+#ifndef PRECXX11
+template <typename... Args> struct Variadic_t { };
+template <typename... Args> Variadic_t<Args...> Variadic;
+auto variadic1 = Variadic<>;
+auto variadic2 = Variadic<int, int>;
+#endif

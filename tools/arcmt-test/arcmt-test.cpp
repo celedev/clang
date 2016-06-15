@@ -132,7 +132,7 @@ static bool checkForMigration(StringRef resourcesPath,
     return false;
 
   arcmt::checkForManualIssues(CI, CI.getFrontendOpts().Inputs[0],
-                              std::make_shared<RawPCHContainerOperations>(),
+                              std::make_shared<PCHContainerOperations>(),
                               Diags->getClient());
   return Diags->getClient()->getNumErrors() > 0;
 }
@@ -171,8 +171,8 @@ static bool performTransformations(StringRef resourcesPath,
   if (!origCI.getLangOpts()->ObjC1)
     return false;
 
-  MigrationProcess migration(
-      origCI, std::make_shared<RawPCHContainerOperations>(), DiagClient);
+  MigrationProcess migration(origCI, std::make_shared<PCHContainerOperations>(),
+                             DiagClient);
 
   std::vector<TransformFn>
     transforms = arcmt::getAllTransformations(origCI.getLangOpts()->getGC(),
@@ -341,7 +341,7 @@ static void printSourceRange(CharSourceRange range, ASTContext &Ctx,
 
 int main(int argc, const char **argv) {
   void *MainAddr = (void*) (intptr_t) GetExecutablePath;
-  llvm::sys::PrintStackTraceOnErrorSignal();
+  llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
 
   std::string
     resourcesPath = CompilerInvocation::GetResourcesPath(argv[0], MainAddr);

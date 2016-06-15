@@ -3,12 +3,20 @@
 typedef long long t1 __attribute__ ((vector_size (8)));
 typedef char t2 __attribute__ ((vector_size (16)));
 typedef float t3 __attribute__ ((vector_size (16)));
+typedef short s2 __attribute__ ((vector_size(4)));
+
+typedef enum { Evalue = 0x10000 } E;
 
 void f()
 {  
   t1 v1;
   t2 v2;
   t3 v3;
+  s2 v4;
+  E e;
+
+  e = (E)v4;
+  v4 = (s2)e;
   
   v2 = (t2)v1; // expected-error {{invalid conversion between vector type \
 't2' (vector of 16 'char' values) and 't1' (vector of 1 'long long' value) of different size}}
@@ -42,7 +50,12 @@ void f4() {
   float2 f2;
   double d;
   f2 += d;
-  d += f2;
+  // We used to allow the next statement, but we've always rejected the next two
+  // statements
+  // FIXME: This diagnostic is inaccurate.
+  d += f2; // expected-error {{cannot convert between vector values of different size}}
+  d = f2; // expected-error {{assigning to 'double' from incompatible type 'float2'}}
+  d = d + f2; // expected-error {{assigning to 'double' from incompatible type 'float2'}}
 }
 
 // rdar://15931426
