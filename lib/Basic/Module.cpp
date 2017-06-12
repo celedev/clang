@@ -27,13 +27,13 @@ using namespace clang;
 Module::Module(StringRef Name, SourceLocation DefinitionLoc, Module *Parent,
                bool IsFramework, bool IsExplicit, unsigned VisibilityID)
     : Name(Name), DefinitionLoc(DefinitionLoc), Parent(Parent), Directory(),
-      Umbrella(), Signature(0), ASTFile(nullptr), VisibilityID(VisibilityID),
+      Umbrella(), ASTFile(nullptr), VisibilityID(VisibilityID),
       IsMissingRequirement(false), HasIncompatibleModuleFile(false),
       IsAvailable(true), IsFromModuleFile(false), IsFramework(IsFramework),
       IsExplicit(IsExplicit), IsSystem(false), IsExternC(false),
       IsInferred(false), InferSubmodules(false), InferExplicitSubmodules(false),
       InferExportWildcard(false), ConfigMacrosExhaustive(false),
-      NameVisibility(Hidden) {
+      NoUndeclaredIncludes(false), NameVisibility(Hidden) {
   if (Parent) {
     if (!Parent->isAvailable())
       IsAvailable = false;
@@ -41,6 +41,8 @@ Module::Module(StringRef Name, SourceLocation DefinitionLoc, Module *Parent,
       IsSystem = true;
     if (Parent->IsExternC)
       IsExternC = true;
+    if (Parent->NoUndeclaredIncludes)
+      NoUndeclaredIncludes = true;
     IsMissingRequirement = Parent->IsMissingRequirement;
     
     Parent->SubModuleIndex[Name] = Parent->SubModules.size();
@@ -62,8 +64,11 @@ static bool hasFeature(StringRef Feature, const LangOptions &LangOpts,
   bool HasFeature = llvm::StringSwitch<bool>(Feature)
                         .Case("altivec", LangOpts.AltiVec)
                         .Case("blocks", LangOpts.Blocks)
+                        .Case("coroutines", LangOpts.CoroutinesTS)
                         .Case("cplusplus", LangOpts.CPlusPlus)
                         .Case("cplusplus11", LangOpts.CPlusPlus11)
+                        .Case("freestanding", LangOpts.Freestanding)
+                        .Case("gnuinlineasm", LangOpts.GNUAsm)
                         .Case("objc", LangOpts.ObjC1)
                         .Case("objc_arc", LangOpts.ObjCAutoRefCount)
                         .Case("opencl", LangOpts.OpenCL)
@@ -179,6 +184,11 @@ bool Module::directlyUses(const Module *Requested) const {
   for (auto *Use : Top->DirectUses)
     if (Requested->isSubModuleOf(Use))
       return true;
+
+  // Anyone is allowed to use our builtin stddef.h and its accompanying module.
+  if (!Requested->Parent && Requested->Name == "_Builtin_stddef_max_align_t")
+    return true;
+
   return false;
 }
 
@@ -384,11 +394,30 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
                {"exclude ", HK_Excluded}};
 
   for (auto &K : Kinds) {
+    assert(&K == &Kinds[K.Kind] && "kinds in wrong order");
     for (auto &H : Headers[K.Kind]) {
       OS.indent(Indent + 2);
       OS << K.Prefix << "header \"";
       OS.write_escaped(H.NameAsWritten);
-      OS << "\"\n";
+      OS << "\" { size " << H.Entry->getSize()
+         << " mtime " << H.Entry->getModificationTime() << " }\n";
+    }
+  }
+  for (auto *Unresolved : {&UnresolvedHeaders, &MissingHeaders}) {
+    for (auto &U : *Unresolved) {
+      OS.indent(Indent + 2);
+      OS << Kinds[U.Kind].Prefix << "header \"";
+      OS.write_escaped(U.FileName);
+      OS << "\"";
+      if (U.Size || U.ModTime) {
+        OS << " {";
+        if (U.Size)
+          OS << " size " << *U.Size;
+        if (U.ModTime)
+          OS << " mtime " << *U.ModTime;
+        OS << " }";
+      }
+      OS << "\n";
     }
   }
 

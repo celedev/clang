@@ -176,9 +176,9 @@ namespace test4 {
 
     // Make sure these don't crash. Better diagnostics would be nice.
     for (: {1, 2, 3}) {} // expected-error {{expected expression}} expected-error {{expected ';'}}
-    for (1 : {1, 2, 3}) {} // expected-error {{must declare a variable}} expected-warning {{result unused}}
+    for (1 : {1, 2, 3}) {} // expected-error {{must declare a variable}}
     for (+x : {1, 2, 3}) {} // expected-error {{undeclared identifier}} expected-error {{expected ';'}}
-    for (+y : {1, 2, 3}) {} // expected-error {{must declare a variable}} expected-warning {{result unused}}
+    for (+y : {1, 2, 3}) {} // expected-error {{must declare a variable}}
   }
 }
 
@@ -240,4 +240,38 @@ namespace pr18587 {
     for (auto Arg: x) {
     }
   }
+}
+
+namespace PR32933 {
+// https://bugs.llvm.org/show_bug.cgi?id=32933
+void foo ()
+{ 
+  int b = 1, a[b];
+  a[0] = 0;
+  [&] { for (int c : a) 0; } ();
+}
+
+
+int foo(int b) {
+  int varr[b][(b+=8)];
+  b = 15; 
+  [&] {
+    int i = 0;
+    for (auto &c : varr) 
+    {
+      c[0] = ++b;
+    }
+    [&] {
+      int i = 0;
+      for (auto &c : varr) {
+        int j = 0;
+        for(auto &c2 : c) {
+          ++j;
+        }
+        ++i;
+      }
+    }();
+  }();
+  return b;
+}
 }

@@ -239,7 +239,8 @@ public:
   bool VisitUnresolvedUsingValueDecl(UnresolvedUsingValueDecl *D);
   bool VisitUnresolvedUsingTypenameDecl(UnresolvedUsingTypenameDecl *D);
   bool VisitStaticAssertDecl(StaticAssertDecl *D);
-  
+  bool VisitFriendDecl(FriendDecl *D);
+
   // Name visitor
   bool VisitDeclarationNameInfo(DeclarationNameInfo Name);
   bool VisitNestedNameSpecifier(NestedNameSpecifier *NNS, SourceRange Range);
@@ -265,6 +266,9 @@ public:
   bool RunVisitorWorkList(VisitorWorkList &WL);
   void EnqueueWorkList(VisitorWorkList &WL, const Stmt *S);
   LLVM_ATTRIBUTE_NOINLINE bool Visit(const Stmt *S);
+
+private:
+  Optional<bool> handleDeclForVisitation(const Decl *D);
 };
 
 }

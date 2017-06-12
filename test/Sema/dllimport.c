@@ -4,12 +4,18 @@
 // RUN: %clang_cc1 -triple x86_64-mingw32 -fsyntax-only -fms-extensions -verify -std=c99 -DGNU %s
 
 // Invalid usage.
-__declspec(dllimport) typedef int typedef1; // expected-warning{{'dllimport' attribute only applies to variables and functions}}
-typedef __declspec(dllimport) int typedef2; // expected-warning{{'dllimport' attribute only applies to variables and functions}}
-typedef int __declspec(dllimport) typedef3; // expected-warning{{'dllimport' attribute only applies to variables and functions}}
-typedef __declspec(dllimport) void (*FunTy)(); // expected-warning{{'dllimport' attribute only applies to variables and functions}}
-enum __declspec(dllimport) Enum { EnumVal }; // expected-warning{{'dllimport' attribute only applies to variables and functions}}
-struct __declspec(dllimport) Record {}; // expected-warning{{'dllimport' attribute only applies to variables and functions}}
+__declspec(dllimport) typedef int typedef1;
+// expected-warning@-1{{'dllimport' attribute only applies to variables and functions}}
+typedef __declspec(dllimport) int typedef2;
+// expected-warning@-1{{'dllimport' attribute only applies to variables and functions}}
+typedef int __declspec(dllimport) typedef3;
+// expected-warning@-1{{'dllimport' attribute only applies to variables and functions}}
+typedef __declspec(dllimport) void (*FunTy)();
+// expected-warning@-1{{'dllimport' attribute only applies to variables and functions}}
+enum __declspec(dllimport) Enum { EnumVal };
+// expected-warning@-1{{'dllimport' attribute only applies to variables and functions}}
+struct __declspec(dllimport) Record {};
+// expected-warning@-1{{'dllimport' attribute only applies to variables and functions}}
 
 
 
@@ -203,6 +209,10 @@ __declspec(dllimport) void redecl6();
 #endif
                       void redecl7();
 __declspec(dllimport) inline void redecl7() {}
+
+// PR31069: Don't crash trying to merge attributes for redeclaration of invalid decl.
+void __declspec(dllimport) redecl8(unknowntype X); // expected-error{{unknown type name 'unknowntype'}}
+void redecl8(unknowntype X) { } // expected-error{{unknown type name 'unknowntype'}}
 
 // External linkage is required.
 __declspec(dllimport) static int staticFunc(); // expected-error{{'staticFunc' must have external linkage when declared 'dllimport'}}

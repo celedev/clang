@@ -6,6 +6,12 @@ struct A
    int a[];  /* expected-warning {{flexible array member 'a' in otherwise empty struct is a Microsoft extension}} */
 };
 
+struct PR28407
+{
+  int : 1;
+  int a[]; /* expected-warning {{flexible array member 'a' in otherwise empty struct is a Microsoft extension}} */
+};
+
 struct C {
    int l;
    union {
@@ -21,6 +27,8 @@ struct D {
 };
 
 struct __declspec(uuid("00000000-0000-0000-C000-000000000046")) IUnknown {}; /* expected-error {{'uuid' attribute is not supported in C}} */
+
+[uuid("00000000-0000-0000-C000-000000000046")] struct IUnknown2 {}; /* expected-error {{'uuid' attribute is not supported in C}} */
 
 typedef struct notnested {
   long bad1;

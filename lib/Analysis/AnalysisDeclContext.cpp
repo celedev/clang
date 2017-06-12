@@ -81,9 +81,7 @@ AnalysisDeclContextManager::AnalysisDeclContextManager(bool useUnoptimizedCFG,
   cfgBuildOptions.AddCXXNewAllocator = addCXXNewAllocator;
 }
 
-void AnalysisDeclContextManager::clear() {
-  llvm::DeleteContainerSeconds(Contexts);
-}
+void AnalysisDeclContextManager::clear() { Contexts.clear(); }
 
 static BodyFarm &getBodyFarm(ASTContext &C, CodeInjector *injector = nullptr) {
   static BodyFarm *BF = new BodyFarm(C, injector);
@@ -94,6 +92,8 @@ Stmt *AnalysisDeclContext::getBody(bool &IsAutosynthesized) const {
   IsAutosynthesized = false;
   if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
     Stmt *Body = FD->getBody();
+    if (auto *CoroBody = dyn_cast_or_null<CoroutineBodyStmt>(Body))
+      Body = CoroBody->getBody();
     if (Manager && Manager->synthesizeBodies()) {
       Stmt *SynthesizedBody =
           getBodyFarm(getASTContext(), Manager->Injector.get()).getBody(FD);
@@ -307,10 +307,10 @@ AnalysisDeclContext *AnalysisDeclContextManager::getContext(const Decl *D) {
     D = FD;
   }
 
-  AnalysisDeclContext *&AC = Contexts[D];
+  std::unique_ptr<AnalysisDeclContext> &AC = Contexts[D];
   if (!AC)
-    AC = new AnalysisDeclContext(this, D, cfgBuildOptions);
-  return AC;
+    AC = llvm::make_unique<AnalysisDeclContext>(this, D, cfgBuildOptions);
+  return AC.get();
 }
 
 const StackFrameContext *
@@ -606,9 +606,7 @@ AnalysisDeclContext::~AnalysisDeclContext() {
   }
 }
 
-AnalysisDeclContextManager::~AnalysisDeclContextManager() {
-  llvm::DeleteContainerSeconds(Contexts);
-}
+AnalysisDeclContextManager::~AnalysisDeclContextManager() {}
 
 LocationContext::~LocationContext() {}
 

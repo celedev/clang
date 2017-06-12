@@ -4,7 +4,6 @@
 // RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -std=c++11 -fopenmp -fnoopenmp-use-tls -fexceptions -fcxx-exceptions -debug-info-kind=line-tables-only -x c++ -emit-llvm %s -o - | FileCheck %s --check-prefix=TERM_DEBUG
 // RUN: %clang_cc1 -verify -fopenmp -fnoopenmp-use-tls -x c++ -std=c++11 -DARRAY -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=ARRAY %s
 // expected-no-diagnostics
-// REQUIRES: x86-registered-target
 #ifndef ARRAY
 #ifndef HEADER
 #define HEADER
@@ -225,21 +224,24 @@ void array_func(int n, int a[n], St s[2]) {
 #endif
 
 // CHECK-LABEL:@_ZN2SSC2ERi(
-// CHECK: call void ([[IDENT_T_TY]]*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call([[IDENT_T_TY]]* @{{.+}}, i32 4, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, [[SS_TY]]*, i32, i32, i32)* [[SS_MICROTASK:@.+]] to void
+// CHECK: call void ([[IDENT_T_TY]]*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call([[IDENT_T_TY]]* @{{.+}}, i32 4, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, [[SS_TY]]*, i64, i64, i64)* [[SS_MICROTASK:@.+]] to void
 // CHECK-NEXT: ret void
 
-// CHECK: define internal void [[SS_MICROTASK]](i32* {{[^,]+}}, i32* {{[^,]+}}, [[SS_TY]]* {{.+}}, i32 {{.+}}, i32 {{.+}}, i32 {{.+}})
+// CHECK: define internal void [[SS_MICROTASK]](i32* {{[^,]+}}, i32* {{[^,]+}}, [[SS_TY]]* {{.+}}, i64 {{.+}}, i64 {{.+}}, i64 {{.+}})
 // Private a
-// CHECK: alloca i32,
+// CHECK: alloca i64,
 // Private b
-// CHECK: alloca i32,
+// CHECK: alloca i64,
 // Private c
-// CHECK: alloca i32,
+// CHECK: alloca i64,
 // CHECK: alloca i32*,
 // CHECK: alloca i32*,
 // CHECK: alloca i32*,
 // CHECK: alloca i32*,
 // CHECK: [[DID_IT:%.+]] = alloca i32,
+// CHECK: bitcast i64* %{{.+}} to i32*
+// CHECK: bitcast i64* %{{.+}} to i32*
+// CHECK: bitcast i64* %{{.+}} to i32*
 // CHECK: store i32 0, i32* [[DID_IT]],
 // CHECK: [[RES:%.+]] = call i32 @__kmpc_single([[IDENT_T_TY]]* @{{.+}}, i32 %{{.+}})
 // CHECK-NEXT: icmp ne i32 [[RES]], 0
@@ -299,30 +301,42 @@ void array_func(int n, int a[n], St s[2]) {
 // CHECK-NEXT: getelementptr inbounds [[CAP_TY]], [[CAP_TY]]* [[CAP]], i32 0, i32 1
 // CHECK-NEXT: load i32*, i32** %
 // CHECK-NEXT: load i32, i32* %
+// CHECK-NEXT: bitcast i64* %
+// CHECK-NEXT: store i32 %{{.+}}, i32* %
+// CHECK-NEXT: load i64, i64* %
 // CHECK-NEXT: getelementptr inbounds [[CAP_TY]], [[CAP_TY]]* [[CAP]], i32 0, i32 2
 // CHECK-NEXT: load i32*, i32** %
 // CHECK-NEXT: load i32, i32* %
+// CHECK-NEXT: bitcast i64* %
+// CHECK-NEXT: store i32 %{{.+}}, i32* %
+// CHECK-NEXT: load i64, i64* %
 // CHECK-NEXT: getelementptr inbounds [[CAP_TY]], [[CAP_TY]]* [[CAP]], i32 0, i32 3
 // CHECK-NEXT: load i32*, i32** %
 // CHECK-NEXT: load i32, i32* %
-// CHECK-NEXT: call void ([[IDENT_T_TY]]*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call([[IDENT_T_TY]]* @{{.+}}, i32 4, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, [[SS_TY]]*, i32, i32, i32)* [[SS_MICROTASK1:@.+]] to void
+// CHECK-NEXT: bitcast i64* %
+// CHECK-NEXT: store i32 %{{.+}}, i32* %
+// CHECK-NEXT: load i64, i64* %
+// CHECK-NEXT: call void ([[IDENT_T_TY]]*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call([[IDENT_T_TY]]* @{{.+}}, i32 4, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, [[SS_TY]]*, i64, i64, i64)* [[SS_MICROTASK1:@.+]] to void
 // CHECK-NEXT: ret void
 
 // CHECK: define internal void [[COPY_FUNC]](i8*, i8*)
 // CHECK: ret void
 
-// CHECK: define internal void [[SS_MICROTASK1]](i32* {{[^,]+}}, i32* {{[^,]+}}, [[SS_TY]]* {{.+}}, i32 {{.+}}, i32 {{.+}}, i32 {{.+}})
+// CHECK: define internal void [[SS_MICROTASK1]](i32* {{[^,]+}}, i32* {{[^,]+}}, [[SS_TY]]* {{.+}}, i64 {{.+}}, i64 {{.+}}, i64 {{.+}})
 // Private a
-// CHECK: alloca i32,
+// CHECK: alloca i64,
 // Private b
-// CHECK: alloca i32,
+// CHECK: alloca i64,
 // Private c
-// CHECK: alloca i32,
+// CHECK: alloca i64,
 // CHECK: alloca i32*,
 // CHECK: alloca i32*,
 // CHECK: alloca i32*,
 // CHECK: alloca i32*,
 // CHECK: [[DID_IT:%.+]] = alloca i32,
+// CHECK: bitcast i64* %{{.+}} to i32*
+// CHECK: bitcast i64* %{{.+}} to i32*
+// CHECK: bitcast i64* %{{.+}} to i32*
 // CHECK: [[RES:%.+]] = call i32 @__kmpc_single([[IDENT_T_TY]]* @{{.+}}, i32 %{{.+}})
 // CHECK-NEXT: icmp ne i32 [[RES]], 0
 // CHECK-NEXT: br i1
@@ -368,13 +382,16 @@ void array_func(int n, int a[n], St s[2]) {
 // CHECK: getelementptr inbounds [[SST_TY]], [[SST_TY]]* %{{.+}}, i32 0, i32 0
 // CHECK-NEXT: store double 0.000000e+00, double* %
 // CHECK-NEXT: getelementptr inbounds [[SST_TY]], [[SST_TY]]* %{{.+}}, i32 0, i32 0
-// CHECK-NEXT: store double* %
+// CHECK-NEXT: store double* %{{.+}}, double** %
 // CHECK-NEXT: load double*, double** %
 // CHECK-NEXT: load double, double* %
-// CHECK-NEXT: call void ([[IDENT_T_TY]]*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call([[IDENT_T_TY]]* @{{.+}}, i32 2, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, [[SST_TY]]*, double)* [[SST_MICROTASK:@.+]] to void
+// CHECK-NEXT: bitcast i64* %{{.+}} to double*
+// CHECK-NEXT: store double %{{.+}}, double* %
+// CHECK-NEXT: load i64, i64* %
+// CHECK-NEXT: call void ([[IDENT_T_TY]]*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call([[IDENT_T_TY]]* @{{.+}}, i32 2, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, [[SST_TY]]*, i64)* [[SST_MICROTASK:@.+]] to void
 // CHECK-NEXT: ret void
 
-// CHECK: define internal void [[SST_MICROTASK]](i32* {{[^,]+}}, i32* {{[^,]+}}, [[SST_TY]]* {{.+}}, double {{.+}})
+// CHECK: define internal void [[SST_MICROTASK]](i32* {{[^,]+}}, i32* {{[^,]+}}, [[SST_TY]]* {{.+}}, i64 {{.+}})
 // CHECK: [[RES:%.+]] = call i32 @__kmpc_single([[IDENT_T_TY]]* @{{.+}}, i32 %{{.+}})
 // CHECK-NEXT: icmp ne i32 [[RES]], 0
 // CHECK-NEXT: br i1

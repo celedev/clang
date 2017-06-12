@@ -90,7 +90,11 @@ LValue CGObjCRuntime::EmitValueForIvarAtOffset(CodeGen::CodeGenFunction &CGF,
                                                unsigned CVRQualifiers,
                                                llvm::Value *Offset) {
   // Compute (type*) ( (char *) BaseValue + Offset)
-  QualType IvarTy = Ivar->getType();
+  QualType InterfaceTy{OID->getTypeForDecl(), 0};
+  QualType ObjectPtrTy =
+      CGF.CGM.getContext().getObjCObjectPointerType(InterfaceTy);
+  QualType IvarTy =
+      Ivar->getUsageType(ObjectPtrTy).withCVRQualifiers(CVRQualifiers);
   llvm::Type *LTy = CGF.CGM.getTypes().ConvertTypeForMem(IvarTy);
   llvm::Value *V = CGF.Builder.CreateBitCast(BaseValue, CGF.Int8PtrTy);
   V = CGF.Builder.CreateInBoundsGEP(V, Offset, "add.ptr");
@@ -98,7 +102,6 @@ LValue CGObjCRuntime::EmitValueForIvarAtOffset(CodeGen::CodeGenFunction &CGF,
   if (!Ivar->isBitField()) {
     V = CGF.Builder.CreateBitCast(V, llvm::PointerType::getUnqual(LTy));
     LValue LV = CGF.MakeNaturalAlignAddrLValue(V, IvarTy);
-    LV.getQuals().addCVRQualifiers(CVRQualifiers);
     return LV;
   }
 
@@ -139,9 +142,8 @@ LValue CGObjCRuntime::EmitValueForIvarAtOffset(CodeGen::CodeGenFunction &CGF,
   Addr = CGF.Builder.CreateElementBitCast(Addr,
                                    llvm::Type::getIntNTy(CGF.getLLVMContext(),
                                                          Info->StorageSize));
-  return LValue::MakeBitfield(Addr, *Info,
-                              IvarTy.withCVRQualifiers(CVRQualifiers),
-                              AlignmentSource::Decl);
+  return LValue::MakeBitfield(Addr, *Info, IvarTy,
+                              LValueBaseInfo(AlignmentSource::Decl, false));
 }
 
 namespace {
@@ -153,18 +155,16 @@ namespace {
   };
 
   struct CallObjCEndCatch final : EHScopeStack::Cleanup {
-    CallObjCEndCatch(bool MightThrow, llvm::Value *Fn) :
-      MightThrow(MightThrow), Fn(Fn) {}
+    CallObjCEndCatch(bool MightThrow, llvm::Value *Fn)
+        : MightThrow(MightThrow), Fn(Fn) {}
     bool MightThrow;
     llvm::Value *Fn;
 
     void Emit(CodeGenFunction &CGF, Flags flags) override {
-      if (!MightThrow) {
-        CGF.Builder.CreateCall(Fn)->setDoesNotThrow();
-        return;
-      }
-
-      CGF.EmitRuntimeCallOrInvoke(Fn);
+      if (MightThrow)
+        CGF.EmitRuntimeCallOrInvoke(Fn);
+      else
+        CGF.EmitNounwindRuntimeCall(Fn);
     }
   };
 }
@@ -233,10 +233,8 @@ void CGObjCRuntime::EmitTryCatchStmt(CodeGenFunction &CGF,
 
     // Enter the catch.
     llvm::Value *Exn = RawExn;
-    if (beginCatchFn) {
-      Exn = CGF.Builder.CreateCall(beginCatchFn, RawExn, "exn.adjusted");
-      cast<llvm::CallInst>(Exn)->setDoesNotThrow();
-    }
+    if (beginCatchFn)
+      Exn = CGF.EmitNounwindRuntimeCall(beginCatchFn, RawExn, "exn.adjusted");
 
     CodeGenFunction::LexicalScope cleanups(CGF, Handler.Body->getSourceRange());
 

@@ -20,13 +20,15 @@ using namespace clang::CodeGen;
 using namespace llvm;
 
 static MDNode *createMetadata(LLVMContext &Ctx, const LoopAttributes &Attrs,
-                              llvm::DebugLoc Location) {
+                              const llvm::DebugLoc &StartLoc,
+                              const llvm::DebugLoc &EndLoc) {
 
   if (!Attrs.IsParallel && Attrs.VectorizeWidth == 0 &&
       Attrs.InterleaveCount == 0 && Attrs.UnrollCount == 0 &&
       Attrs.VectorizeEnable == LoopAttributes::Unspecified &&
       Attrs.UnrollEnable == LoopAttributes::Unspecified &&
-      !Location)
+      Attrs.DistributeEnable == LoopAttributes::Unspecified &&
+      !StartLoc && !EndLoc)
     return nullptr;
 
   SmallVector<Metadata *, 4> Args;
@@ -34,9 +36,14 @@ static MDNode *createMetadata(LLVMContext &Ctx, const LoopAttributes &Attrs,
   auto TempNode = MDNode::getTemporary(Ctx, None);
   Args.push_back(TempNode.get());
 
-  // If we have a valid debug location for the loop, add it.
-  if (Location)
-    Args.push_back(Location.getAsMDNode());
+  // If we have a valid start debug location for the loop, add it.
+  if (StartLoc) {
+    Args.push_back(StartLoc.getAsMDNode());
+
+    // If we also have a valid end debug location for the loop, add it.
+    if (EndLoc)
+      Args.push_back(EndLoc.getAsMDNode());
+  }
 
   // Setting vectorize.width
   if (Attrs.VectorizeWidth > 0) {
@@ -84,6 +91,14 @@ static MDNode *createMetadata(LLVMContext &Ctx, const LoopAttributes &Attrs,
     Args.push_back(MDNode::get(Ctx, Vals));
   }
 
+  if (Attrs.DistributeEnable != LoopAttributes::Unspecified) {
+    Metadata *Vals[] = {MDString::get(Ctx, "llvm.loop.distribute.enable"),
+                        ConstantAsMetadata::get(ConstantInt::get(
+                            Type::getInt1Ty(Ctx), (Attrs.DistributeEnable ==
+                                                   LoopAttributes::Enable)))};
+    Args.push_back(MDNode::get(Ctx, Vals));
+  }
+
   // Set the first operand to itself.
   MDNode *LoopID = MDNode::get(Ctx, Args);
   LoopID->replaceOperandWith(0, LoopID);
@@ -93,7 +108,8 @@ static MDNode *createMetadata(LLVMContext &Ctx, const LoopAttributes &Attrs,
 LoopAttributes::LoopAttributes(bool IsParallel)
     : IsParallel(IsParallel), VectorizeEnable(LoopAttributes::Unspecified),
       UnrollEnable(LoopAttributes::Unspecified), VectorizeWidth(0),
-      InterleaveCount(0), UnrollCount(0) {}
+      InterleaveCount(0), UnrollCount(0),
+      DistributeEnable(LoopAttributes::Unspecified) {}
 
 void LoopAttributes::clear() {
   IsParallel = false;
@@ -102,23 +118,26 @@ void LoopAttributes::clear() {
   UnrollCount = 0;
   VectorizeEnable = LoopAttributes::Unspecified;
   UnrollEnable = LoopAttributes::Unspecified;
+  DistributeEnable = LoopAttributes::Unspecified;
 }
 
 LoopInfo::LoopInfo(BasicBlock *Header, const LoopAttributes &Attrs,
-                   llvm::DebugLoc Location)
+                   const llvm::DebugLoc &StartLoc, const llvm::DebugLoc &EndLoc)
     : LoopID(nullptr), Header(Header), Attrs(Attrs) {
-  LoopID = createMetadata(Header->getContext(), Attrs, Location);
+  LoopID = createMetadata(Header->getContext(), Attrs, StartLoc, EndLoc);
 }
 
-void LoopInfoStack::push(BasicBlock *Header, llvm::DebugLoc Location) {
-  Active.push_back(LoopInfo(Header, StagedAttrs, Location));
+void LoopInfoStack::push(BasicBlock *Header, const llvm::DebugLoc &StartLoc,
+                         const llvm::DebugLoc &EndLoc) {
+  Active.push_back(LoopInfo(Header, StagedAttrs, StartLoc, EndLoc));
   // Clear the attributes so nested loops do not inherit them.
   StagedAttrs.clear();
 }
 
 void LoopInfoStack::push(BasicBlock *Header, clang::ASTContext &Ctx,
                          ArrayRef<const clang::Attr *> Attrs,
-                         llvm::DebugLoc Location) {
+                         const llvm::DebugLoc &StartLoc,
+                         const llvm::DebugLoc &EndLoc) {
 
   // Identify loop hint attributes from Attrs.
   for (const auto *Attr : Attrs) {
@@ -172,6 +191,9 @@ void LoopInfoStack::push(BasicBlock *Header, clang::ASTContext &Ctx,
       case LoopHintAttr::Unroll:
         setUnrollState(LoopAttributes::Disable);
         break;
+      case LoopHintAttr::Distribute:
+        setDistributeState(false);
+        break;
       case LoopHintAttr::UnrollCount:
       case LoopHintAttr::VectorizeWidth:
       case LoopHintAttr::InterleaveCount:
@@ -187,6 +209,9 @@ void LoopInfoStack::push(BasicBlock *Header, clang::ASTContext &Ctx,
         break;
       case LoopHintAttr::Unroll:
         setUnrollState(LoopAttributes::Enable);
+        break;
+      case LoopHintAttr::Distribute:
+        setDistributeState(true);
         break;
       case LoopHintAttr::UnrollCount:
       case LoopHintAttr::VectorizeWidth:
@@ -207,6 +232,7 @@ void LoopInfoStack::push(BasicBlock *Header, clang::ASTContext &Ctx,
       case LoopHintAttr::UnrollCount:
       case LoopHintAttr::VectorizeWidth:
       case LoopHintAttr::InterleaveCount:
+      case LoopHintAttr::Distribute:
         llvm_unreachable("Options cannot be used to assume mem safety.");
         break;
       }
@@ -221,6 +247,7 @@ void LoopInfoStack::push(BasicBlock *Header, clang::ASTContext &Ctx,
       case LoopHintAttr::UnrollCount:
       case LoopHintAttr::VectorizeWidth:
       case LoopHintAttr::InterleaveCount:
+      case LoopHintAttr::Distribute:
         llvm_unreachable("Options cannot be used with 'full' hint.");
         break;
       }
@@ -239,6 +266,7 @@ void LoopInfoStack::push(BasicBlock *Header, clang::ASTContext &Ctx,
       case LoopHintAttr::Unroll:
       case LoopHintAttr::Vectorize:
       case LoopHintAttr::Interleave:
+      case LoopHintAttr::Distribute:
         llvm_unreachable("Options cannot be assigned a value.");
         break;
       }
@@ -247,7 +275,7 @@ void LoopInfoStack::push(BasicBlock *Header, clang::ASTContext &Ctx,
   }
 
   /// Stage the attributes.
-  push(Header, Location);
+  push(Header, StartLoc, EndLoc);
 }
 
 void LoopInfoStack::pop() {

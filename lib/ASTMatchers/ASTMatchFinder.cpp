@@ -126,6 +126,8 @@ public:
       traverse(*Q);
     else if (const TypeLoc *T = DynNode.get<TypeLoc>())
       traverse(*T);
+    else if (const auto *C = DynNode.get<CXXCtorInitializer>())
+      traverse(*C);
     // FIXME: Add other base types after adding tests.
 
     // It's OK to always overwrite the bound nodes, as if there was
@@ -194,6 +196,12 @@ public:
       return false;
     return traverse(NNS);
   }
+  bool TraverseConstructorInitializer(CXXCtorInitializer *CtorInit) {
+    if (!CtorInit)
+      return true;
+    ScopedIncrement ScopedDepth(&CurrentDepth);
+    return traverse(*CtorInit);
+  }
 
   bool shouldVisitTemplateInstantiations() const { return true; }
   bool shouldVisitImplicitCode() const { return true; }
@@ -234,6 +242,10 @@ private:
   }
   bool baseTraverse(NestedNameSpecifierLoc NNS) {
     return VisitorBase::TraverseNestedNameSpecifierLoc(NNS);
+  }
+  bool baseTraverse(const CXXCtorInitializer &CtorInit) {
+    return VisitorBase::TraverseConstructorInitializer(
+        const_cast<CXXCtorInitializer *>(&CtorInit));
   }
 
   // Sets 'Matched' to true if 'Matcher' matches 'Node' and:
@@ -371,6 +383,7 @@ public:
   bool TraverseTypeLoc(TypeLoc TypeNode);
   bool TraverseNestedNameSpecifier(NestedNameSpecifier *NNS);
   bool TraverseNestedNameSpecifierLoc(NestedNameSpecifierLoc NNS);
+  bool TraverseConstructorInitializer(CXXCtorInitializer *CtorInit);
 
   // Matches children or descendants of 'Node' with 'BaseMatcher'.
   bool memoizedMatchesRecursively(const ast_type_traits::DynTypedNode &Node,
@@ -471,6 +484,8 @@ public:
     } else if (auto *N = Node.get<NestedNameSpecifierLoc>()) {
       match(*N);
     } else if (auto *N = Node.get<TypeLoc>()) {
+      match(*N);
+    } else if (auto *N = Node.get<CXXCtorInitializer>()) {
       match(*N);
     }
   }
@@ -593,6 +608,9 @@ private:
   void matchDispatch(const NestedNameSpecifierLoc *Node) {
     matchWithoutFilter(*Node, Matchers->NestedNameSpecifierLoc);
   }
+  void matchDispatch(const CXXCtorInitializer *Node) {
+    matchWithoutFilter(*Node, Matchers->CtorInit);
+  }
   void matchDispatch(const void *) { /* Do nothing. */ }
   /// @}
 
@@ -712,7 +730,7 @@ private:
 
   // Returns true if 'TypeNode' has an alias that matches the given matcher.
   bool typeHasMatchingAlias(const Type *TypeNode,
-                            const Matcher<NamedDecl> Matcher,
+                            const Matcher<NamedDecl> &Matcher,
                             BoundNodesTreeBuilder *Builder) {
     const Type *const CanonicalType =
       ActiveASTContext->getCanonicalType(TypeNode);
@@ -864,6 +882,17 @@ bool MatchASTVisitor::TraverseNestedNameSpecifierLoc(
       RecursiveASTVisitor<MatchASTVisitor>::TraverseNestedNameSpecifierLoc(NNS);
 }
 
+bool MatchASTVisitor::TraverseConstructorInitializer(
+    CXXCtorInitializer *CtorInit) {
+  if (!CtorInit)
+    return true;
+
+  match(*CtorInit);
+
+  return RecursiveASTVisitor<MatchASTVisitor>::TraverseConstructorInitializer(
+      CtorInit);
+}
+
 class MatchASTConsumer : public ASTConsumer {
 public:
   MatchASTConsumer(MatchFinder *Finder,
@@ -934,6 +963,12 @@ void MatchFinder::addMatcher(const TypeLocMatcher &NodeMatch,
   Matchers.AllCallbacks.insert(Action);
 }
 
+void MatchFinder::addMatcher(const CXXCtorInitializerMatcher &NodeMatch,
+                             MatchCallback *Action) {
+  Matchers.CtorInit.emplace_back(NodeMatch, Action);
+  Matchers.AllCallbacks.insert(Action);
+}
+
 bool MatchFinder::addDynamicMatcher(const internal::DynTypedMatcher &NodeMatch,
                                     MatchCallback *Action) {
   if (NodeMatch.canConvertTo<Decl>()) {
@@ -953,6 +988,9 @@ bool MatchFinder::addDynamicMatcher(const internal::DynTypedMatcher &NodeMatch,
     return true;
   } else if (NodeMatch.canConvertTo<TypeLoc>()) {
     addMatcher(NodeMatch.convertTo<TypeLoc>(), Action);
+    return true;
+  } else if (NodeMatch.canConvertTo<CXXCtorInitializer>()) {
+    addMatcher(NodeMatch.convertTo<CXXCtorInitializer>(), Action);
     return true;
   }
   return false;

@@ -61,7 +61,7 @@ private:
 template <typename T>
 testing::AssertionResult matchesConditionally(
     const std::string &Code, const T &AMatcher, bool ExpectMatch,
-    llvm::StringRef CompileArg,
+    llvm::ArrayRef<llvm::StringRef> CompileArgs,
     const FileContentMappings &VirtualMappedFiles = FileContentMappings(),
     const std::string &Filename = "input.cc") {
   bool Found = false, DynamicFound = false;
@@ -73,12 +73,17 @@ testing::AssertionResult matchesConditionally(
     return testing::AssertionFailure() << "Could not add dynamic matcher";
   std::unique_ptr<FrontendActionFactory> Factory(
       newFrontendActionFactory(&Finder));
-  // Some tests use typeof, which is a gnu extension.
-  std::vector<std::string> Args;
-  Args.push_back(CompileArg);
-  // Some tests need rtti/exceptions on
-  Args.push_back("-frtti");
-  Args.push_back("-fexceptions");
+  // Some tests need rtti/exceptions on.  Use an unknown-unknown triple so we
+  // don't instantiate the full system toolchain.  On Linux, instantiating the
+  // toolchain involves stat'ing large portions of /usr/lib, and this slows down
+  // not only this test, but all other tests, via contention in the kernel.
+  //
+  // FIXME: This is a hack to work around the fact that there's no way to do the
+  // equivalent of runToolOnCodeWithArgs without instantiating a full Driver.
+  // We should consider having a function, at least for tests, that invokes cc1.
+  std::vector<std::string> Args(CompileArgs.begin(), CompileArgs.end());
+  Args.insert(Args.end(), {"-frtti", "-fexceptions",
+                           "-target", "i386-unknown-unknown"});
   if (!runToolOnCodeWithArgs(
           Factory->create(), Code, Args, Filename, "clang-tool",
           std::make_shared<PCHContainerOperations>(), VirtualMappedFiles)) {
@@ -101,6 +106,17 @@ testing::AssertionResult matchesConditionally(
 }
 
 template <typename T>
+testing::AssertionResult matchesConditionally(
+    const std::string &Code, const T &AMatcher, bool ExpectMatch,
+    llvm::StringRef CompileArg,
+    const FileContentMappings &VirtualMappedFiles = FileContentMappings(),
+    const std::string &Filename = "input.cc") {
+  return matchesConditionally(Code, AMatcher, ExpectMatch,
+                              llvm::makeArrayRef(CompileArg),
+                              VirtualMappedFiles, Filename);
+}
+
+template <typename T>
 testing::AssertionResult matches(const std::string &Code, const T &AMatcher) {
   return matchesConditionally(Code, AMatcher, true, "-std=c++11");
 }
@@ -112,11 +128,12 @@ testing::AssertionResult notMatches(const std::string &Code,
 }
 
 template <typename T>
-testing::AssertionResult matchesObjC(const std::string &Code,
-                                     const T &AMatcher) {
-  return matchesConditionally(
-    Code, AMatcher, true,
-    "", FileContentMappings(), "input.m");
+testing::AssertionResult matchesObjC(const std::string &Code, const T &AMatcher,
+                                     bool ExpectMatch = true) {
+  return matchesConditionally(Code, AMatcher, ExpectMatch,
+                              {"-fobjc-nonfragile-abi", "-Wno-objc-root-class",
+                               "-Wno-incomplete-implementation"},
+                              FileContentMappings(), "input.m");
 }
 
 template <typename T>
@@ -141,10 +158,8 @@ testing::AssertionResult notMatchesC(const std::string &Code,
 
 template <typename T>
 testing::AssertionResult notMatchesObjC(const std::string &Code,
-                                     const T &AMatcher) {
-  return matchesConditionally(
-    Code, AMatcher, false,
-    "", FileContentMappings(), "input.m");
+                                        const T &AMatcher) {
+  return matchesObjC(Code, AMatcher, false);
 }
 
 
@@ -180,13 +195,12 @@ testing::AssertionResult matchesConditionallyWithCuda(
     return testing::AssertionFailure() << "Could not add dynamic matcher";
   std::unique_ptr<FrontendActionFactory> Factory(
       newFrontendActionFactory(&Finder));
-  // Some tests use typeof, which is a gnu extension.
-  std::vector<std::string> Args;
-  Args.push_back("-xcuda");
-  Args.push_back("-fno-ms-extensions");
-  Args.push_back("--cuda-host-only");
-  Args.push_back("-nocudainc");
-  Args.push_back(CompileArg);
+  // Some tests use typeof, which is a gnu extension.  Using an explicit
+  // unknown-unknown triple is good for a large speedup, because it lets us
+  // avoid constructing a full system triple.
+  std::vector<std::string> Args = {
+      "-xcuda",  "-fno-ms-extensions",      "--cuda-host-only", "-nocudainc",
+      "-target", "x86_64-unknown-unknown", CompileArg};
   if (!runToolOnCodeWithArgs(Factory->create(),
                              CudaHeader + Code, Args)) {
     return testing::AssertionFailure() << "Parsing error in \"" << Code << "\"";
@@ -230,8 +244,11 @@ matchAndVerifyResultConditionally(const std::string &Code, const T &AMatcher,
   Finder.addMatcher(AMatcher, &VerifyVerifiedResult);
   std::unique_ptr<FrontendActionFactory> Factory(
       newFrontendActionFactory(&Finder));
-  // Some tests use typeof, which is a gnu extension.
-  std::vector<std::string> Args(1, "-std=gnu++98");
+  // Some tests use typeof, which is a gnu extension.  Using an explicit
+  // unknown-unknown triple is good for a large speedup, because it lets us
+  // avoid constructing a full system triple.
+  std::vector<std::string> Args = {"-std=gnu++98", "-target",
+                                   "i386-unknown-unknown"};
   if (!runToolOnCodeWithArgs(Factory->create(), Code, Args)) {
     return testing::AssertionFailure() << "Parsing error in \"" << Code << "\"";
   }
