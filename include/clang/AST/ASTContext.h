@@ -1718,7 +1718,8 @@ public:
   /// an ObjCCategoryImplDecl or ObjCImplementationDecl; it should
   /// only be NULL when getting encodings for protocol properties.
   std::string getObjCEncodingForPropertyDecl(const ObjCPropertyDecl *PD,
-                                             const Decl *Container) const;
+                                             const Decl *Container,
+                                             unsigned EncodeOptionsMask = 0 /* mask of ObjcEncodeOptions */ ) const;
 
   bool ProtocolCompatibleWithProtocol(ObjCProtocolDecl *lProto,
                                       ObjCProtocolDecl *rProto) const;

@@ -1040,7 +1040,7 @@ CXString clang_getDeclObjCTypeExtendedEncoding(CXCursor C, unsigned EncodeOption
   if (const ObjCMethodDecl *OMD = dyn_cast<ObjCMethodDecl>(D))  {
     encoding = Ctx.getObjCEncodingForMethodDecl(OMD, EncodeOptionsMask, WithOffset);
   } else if (const ObjCPropertyDecl *OPD = dyn_cast<ObjCPropertyDecl>(D))
-    encoding = Ctx.getObjCEncodingForPropertyDecl(OPD, nullptr);
+    encoding = Ctx.getObjCEncodingForPropertyDecl(OPD, nullptr, EncodeOptionsMask);
   else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D))
     encoding = Ctx.getObjCEncodingForFunctionDecl(FD, EncodeOptionsMask, WithOffset);
   else {

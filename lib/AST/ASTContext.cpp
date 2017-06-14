@@ -5809,7 +5809,8 @@ ASTContext::getObjCPropertyImplDeclForPropertyDecl(
 /// @endcode
 std::string
 ASTContext::getObjCEncodingForPropertyDecl(const ObjCPropertyDecl *PD,
-                                           const Decl *Container) const {
+                                           const Decl *Container,
+                                           unsigned EncodeOptionsMask) const {
   // Collect information from the property implementation decl(s).
   bool Dynamic = false;
   ObjCPropertyImplDecl *SynthesizePID = nullptr;
@@ -5828,7 +5829,7 @@ ASTContext::getObjCEncodingForPropertyDecl(const ObjCPropertyDecl *PD,
   // Encode result type.
   // GCC has some special rules regarding encoding of properties which
   // closely resembles encoding of ivars.
-  getObjCEncodingForPropertyType(PD->getType(), S);
+  getObjCEncodingForPropertyType(PD->getType(), S, EncodeOptionsMask);
 
   if (PD->isReadOnly()) {
     S += ",R";
